@@ -1,0 +1,6 @@
+*.o
+*.obj
+*.exe
+mbparse
+demo
+.DS_Store

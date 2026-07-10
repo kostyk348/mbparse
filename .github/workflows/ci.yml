@@ -1,0 +1,35 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        cc: [gcc, clang]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build
+      run: |
+        cc -O2 -Wall -Wextra -pedantic -std=c99 -o mbparse mbparse.c
+      shell: bash
+
+    - name: Test
+      run: |
+        ./mbparse "01 03 00 00 00 0A"
+        ./mbparse "01 03 00 00 00 0A" -j
+        ./mbparse -l
+        ./mbparse explain "01 03 00 00 00 0A"
+      shell: bash
+
+    - name: Build examples
+      run: |
+        cd examples
+        cc -O2 -Wall -Wextra -pedantic -std=c99 -o demo demo.c
+        ./demo
+      shell: bash
