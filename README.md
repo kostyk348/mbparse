@@ -1,5 +1,8 @@
 # mbparse — Modbus RTU/TCP frame analyzer
 
+[![CI](https://github.com/kostyk348/mbparse/actions/workflows/ci.yml/badge.svg)](https://github.com/kostyk348/mbparse/actions/workflows/ci.yml)
+
+
 Zero-dependency C99 CLI tool for parsing, validating, and explaining Modbus frames.
 
 ```
@@ -42,21 +45,39 @@ mbparse tcp <host:port>    Query Modbus TCP device
 
 ```bash
 # Decode a Read Holding Registers request (RTU)
+
+[![CI](https://github.com/kostyk348/mbparse/actions/workflows/ci.yml/badge.svg)](https://github.com/kostyk348/mbparse/actions/workflows/ci.yml)
+
 mbparse "01 03 00 00 00 0A"
 
 # Decode without spaces, output JSON
+
+[![CI](https://github.com/kostyk348/mbparse/actions/workflows/ci.yml/badge.svg)](https://github.com/kostyk348/mbparse/actions/workflows/ci.yml)
+
 mbparse 01030000000A -j
 
 # Pipe from stdin
+
+[![CI](https://github.com/kostyk348/mbparse/actions/workflows/ci.yml/badge.svg)](https://github.com/kostyk348/mbparse/actions/workflows/ci.yml)
+
 echo "01030000000A" | mbparse -
 
 # Batch from hex dump file
+
+[![CI](https://github.com/kostyk348/mbparse/actions/workflows/ci.yml/badge.svg)](https://github.com/kostyk348/mbparse/actions/workflows/ci.yml)
+
 mbparse -f dump.txt
 
 # Explain what a frame does
+
+[![CI](https://github.com/kostyk348/mbparse/actions/workflows/ci.yml/badge.svg)](https://github.com/kostyk348/mbparse/actions/workflows/ci.yml)
+
 mbparse explain "01 05 00 01 FF 00"
 
 # Live TCP query
+
+[![CI](https://github.com/kostyk348/mbparse/actions/workflows/ci.yml/badge.svg)](https://github.com/kostyk348/mbparse/actions/workflows/ci.yml)
+
 mbparse tcp 192.168.1.100:502
 ```
 
@@ -74,7 +95,13 @@ gcc -O2 -o mbparse mbparse.c       # MinGW
 
 ```c
 #define MBPARSE_IMPLEMENTATION
+
+[![CI](https://github.com/kostyk348/mbparse/actions/workflows/ci.yml/badge.svg)](https://github.com/kostyk348/mbparse/actions/workflows/ci.yml)
+
 #include "mbparse.h"
+
+[![CI](https://github.com/kostyk348/mbparse/actions/workflows/ci.yml/badge.svg)](https://github.com/kostyk348/mbparse/actions/workflows/ci.yml)
+
 
 uint8_t raw[] = {0x01, 0x03, 0x00, 0x00, 0x00, 0x0A};
 mbparse_rtu_t frame;
