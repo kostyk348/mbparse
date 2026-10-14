@@ -16,7 +16,14 @@ jobs:
 
     - name: Build
       run: |
-        cc -O2 -Wall -Wextra -pedantic -std=c99 -o mbparse mbparse.c
+        # On Windows `cc` is MinGW-w64 GCC, which ignores the MSVC-only
+        # `#pragma comment(lib, "ws2_32.lib")` inside mbparse.c — it emits
+        # "warning: ignoring '#pragma comment '" under -pedantic and does not
+        # link the library. Name it explicitly, so the build does not depend on
+        # a pragma only MSVC honours (see Makefile, OS=Windows_NT).
+        LDFLAGS=""
+        if [ "$RUNNER_OS" = "Windows" ]; then LDFLAGS="-lws2_32"; fi
+        cc -O2 -Wall -Wextra -pedantic -std=c99 -o mbparse mbparse.c $LDFLAGS
       shell: bash
 
     - name: Test (make test)

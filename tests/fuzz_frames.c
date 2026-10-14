@@ -24,7 +24,14 @@
  *   ./tests/fuzz_frames --corpus file.txt N записать кадры в hex-файл
  *   ./tests/fuzz_frames --repro             прицельные репро на найденные баги
  *   ./tests/fuzz_frames --seed 12345 N      другой seed
+ *
+ * На Windows системный <winsock2.h> включается первым — регрессия на
+ * `#define exception_code _exception_code` из <excpt.h> (см. mbparse.h).
  */
+#ifdef _WIN32
+#include <winsock2.h>
+#endif
+
 #define MBPARSE_IMPLEMENTATION
 #include "mbparse.h"
 

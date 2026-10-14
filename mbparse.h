@@ -24,6 +24,27 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+/*
+ * ── Portability guard: Windows SEH macro vs. our public field name ──────────
+ *
+ * <excpt.h> (pulled in by <windows.h>, which <winsock2.h> includes) contains
+ *     #define exception_code _exception_code
+ * among its structured-exception-handling accessor macros. The preprocessor
+ * rewrites the *name* of our struct member in every translation unit that saw a
+ * Windows header before this one: `pdu.exception_code` silently becomes
+ * `pdu._exception_code`, so the compiler reports
+ *     error: 'mbparse_pdu_t' has no member named '_exception_code'
+ * (reproduced with MinGW-w64 GCC 16.1.0 on the windows+gcc CI leg) and every
+ * consumer on Windows breaks. The field name is public API, so the conflicting
+ * macro is what goes, not the field.
+ *
+ * mbparse.c repeats this #undef after its own <winsock2.h> include, because
+ * there the Windows headers are included *after* this header.
+ */
+#ifdef exception_code
+#undef exception_code
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif

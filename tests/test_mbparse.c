@@ -11,7 +11,17 @@
  *   - форматтеры: содержимое и НЕвыход за границы вызывающего буфера.
  *
  * Собирается: cc -std=c99 -Wall -Wextra -pedantic -I. -o tests/mbtest tests/test_mbparse.c
+ *
+ * Регрессия на Windows: <winsock2.h> → <windows.h> → <excpt.h> содержит
+ * `#define exception_code _exception_code`, и заголовок обязан сохранить
+ * документированное имя поля struct'а (см. порт-гвард в mbparse.h).
+ * Поэтому на Windows системный заголовок включается ПЕРВЫМ, до mbparse.h —
+ * именно этот порядок ломал сборку windows+gcc.
  */
+#ifdef _WIN32
+#include <winsock2.h>
+#endif
+
 #define MBPARSE_IMPLEMENTATION
 #include "mbparse.h"
 

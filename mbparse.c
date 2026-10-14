@@ -43,7 +43,29 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+
+/*
+ * MSVC-only pragma: it is the only way to name an import library from the
+ * source, but GCC/MinGW ignores it — and under -pedantic says so
+ * ("warning: ignoring '#pragma comment '"). GCC-based builds link ws2_32 from
+ * the command line instead: the Makefile adds -lws2_32 when OS=Windows_NT and
+ * the CI Build step adds it on Windows, so no build depends on this pragma.
+ */
+#ifdef _MSC_VER
 #pragma comment(lib, "ws2_32.lib")
+#endif
+
+/*
+ * <winsock2.h> pulls in <windows.h> → <excpt.h>, which does
+ *     #define exception_code _exception_code
+ * and would rewrite the name of our struct field in everything below. The
+ * field is public API (mbparse.h documents it), so the macro goes — same guard
+ * sits at the top of mbparse.h for consumers who include a Windows header
+ * before it.
+ */
+#ifdef exception_code
+#undef exception_code
+#endif
 #else
 #include <sys/socket.h>
 #include <netinet/in.h>

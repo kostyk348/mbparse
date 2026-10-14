@@ -77,6 +77,19 @@ cl /O2 mbparse.c ws2_32.lib        # MSVC on Windows
 gcc -O2 -o mbparse mbparse.c -lws2_32   # MinGW
 ```
 
+### Portability notes (Windows)
+
+* `#pragma comment(lib, "ws2_32.lib")` is compiled **only for MSVC** (`_MSC_VER`).
+  GCC/MinGW ignores it (and warns under `-pedantic`), so it is not part of the
+  contract any more: name the library yourself — the `Makefile` adds `-lws2_32`
+  when `OS=Windows_NT`, and the CI build step adds it on Windows.
+* `<winsock2.h>` → `<windows.h>` → `<excpt.h>` contains
+  `#define exception_code _exception_code`, which the preprocessor would apply to
+  the *name of our public struct field*. `mbparse.h` and `mbparse.c` `#undef` it
+  (with a comment) right before they need the field, so `pdu.exception_code`
+  keeps its documented name regardless of include order. Without that guard the
+  field silently becomes `_exception_code` when a Windows header comes first.
+
 ## Testing
 
 Everything runs through one entry point — no external test framework, no
