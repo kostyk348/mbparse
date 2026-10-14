@@ -166,6 +166,41 @@ void mbparse_hex_dump(const uint8_t *data, size_t len);
 #include <string.h>
 #include <ctype.h>
 #include <stdlib.h>
+#include <stdarg.h>
+
+/* ── Буфер вывода ───────────────────────────────────────── */
+
+/**
+ * Дописать форматированную строку в буфер с насыщением.
+ *
+ * snprintf() возвращает длину, которая была бы записана при бесконечном
+ * буфере, поэтому «pos += snprintf(...)» с последующим «buf_sz - pos»
+ * уводит размер в минус (size_t) и следующий snprintf() пишет за пределами
+ * буфера вызывающего. Здесь позиция насыщается на последнем байте
+ * (buf_sz - 1), который всегда остаётся нулевым терминатором, поэтому
+ * ни одна запись не выходит за пределы буфера.
+ *
+ * Возвращает длину строки в буфере (никогда не больше buf_sz - 1).
+ */
+static size_t _mb_cat(char *buf, size_t buf_sz, size_t pos, const char *fmt, ...) {
+    va_list ap;
+    int n;
+
+    if (buf_sz == 0) return 0;
+    if (pos >= buf_sz - 1) {          /* буфер исчерпан */
+        buf[buf_sz - 1] = '\0';
+        return buf_sz - 1;
+    }
+    va_start(ap, fmt);
+    n = vsnprintf(buf + pos, buf_sz - pos, fmt, ap);
+    va_end(ap);
+    if (n < 0) {
+        buf[pos] = '\0';
+        return pos;
+    }
+    pos += (size_t)n;
+    return pos > buf_sz - 1 ? buf_sz - 1 : pos;
+}
 
 /* ── CRC-16 Modbus ──────────────────────────────────────── */
 
@@ -186,13 +221,13 @@ mbparse_proto_t mbparse_detect_proto(const uint8_t *raw, size_t len) {
     /* TCP: bytes 2-3 = protocol ID (must be 0x0000) */
     if (len >= 8 && raw[2] == 0x00 && raw[3] == 0x00) {
         uint16_t tcp_len = (uint16_t)(raw[4] << 8) | raw[5];
-        if (tcp_len + 6 == len)
+        if ((size_t)(tcp_len + 6) == len)
             return MBPARSE_PROTO_TCP;
     }
-    /* RTU: last 2 bytes are CRC, must be at least 4 bytes */
+    /* RTU: последние 2 байта — CRC, младшим байтом вперёд */
     if (len >= 4) {
         uint16_t crc = mbparse_crc16(raw, len - 2);
-        uint16_t rcv_crc = (uint16_t)(raw[len-2] << 8) | raw[len-1];
+        uint16_t rcv_crc = (uint16_t)(raw[len-1] << 8) | raw[len-2];
         if (crc == rcv_crc)
             return MBPARSE_PROTO_RTU;
     }
@@ -207,6 +242,8 @@ mbparse_error_t mbparse_decode_pdu(const uint8_t *data, size_t len, mbparse_pdu_
     out->function = data[0];
     if (out->function & 0x80) {
         out->is_exception = true;
+        /* Кадр-исключение обязан нести код: без него data[1] читать нельзя. */
+        if (len < 2) return MBPARSE_ERR_TRUNC;
         out->exception_code = data[1];
         out->data_len = 0;
     } else {
@@ -222,11 +259,13 @@ mbparse_error_t mbparse_decode_pdu(const uint8_t *data, size_t len, mbparse_pdu_
 mbparse_error_t mbparse_decode_rtu(const uint8_t *raw, size_t len, mbparse_rtu_t *out) {
     if (!raw || !out || len < 4) return MBPARSE_ERR_TRUNC;
     memset(out, 0, sizeof(*out));
-    out->pdu.slave_id = raw[0];
-    out->crc = (uint16_t)(raw[len-2] << 8) | raw[len-1];
+    /* Modbus RTU передаёт CRC младшим байтом вперёд: <CRC_LO> <CRC_HI>. */
+    out->crc = (uint16_t)(raw[len-1] << 8) | raw[len-2];
     uint16_t calc = mbparse_crc16(raw, len - 2);
     out->crc_status = (calc == out->crc) ? 0 : -1;
     mbparse_decode_pdu(raw + 1, len - 3, &out->pdu);
+    /* decode_pdu обнуляет структуру PDU, поэтому адрес ставим после него. */
+    out->pdu.slave_id = raw[0];
     return (out->crc_status == 0) ? MBPARSE_OK : MBPARSE_ERR_CRC;
 }
 
@@ -254,20 +293,29 @@ void mbparse_decode_data(const mbparse_pdu_t *pdu, mbparse_decoded_t *dec) {
     switch (pdu->function) {
     case 0x01: /* Read Coils */
     case 0x02: /* Read Discrete Inputs */
-        if (pdu->data_len >= 5) {
+        /* В PDU запрос и ответ различаются длиной секции данных:
+         * запрос — ровно 4 байта (адрес + количество),
+         * ответ — байт-счётчик + биты (значения катушек здесь не декодируются). */
+        if (pdu->data_len == 4) {
             dec->start_addr = (uint16_t)(pdu->data[0] << 8) | pdu->data[1];
             dec->count      = (uint16_t)(pdu->data[2] << 8) | pdu->data[3];
         }
         break;
     case 0x03: /* Read Holding Registers */
     case 0x04: /* Read Input Registers */
-        if (pdu->data_len >= 5) {
+        if (pdu->data_len == 4) {
+            /* Запрос: адрес + количество регистров. */
             dec->start_addr = (uint16_t)(pdu->data[0] << 8) | pdu->data[1];
             dec->count      = (uint16_t)(pdu->data[2] << 8) | pdu->data[3];
-        } else if (pdu->data_len >= 2 && pdu->data_len % 2 == 1) {
-            /* Response: byte count + register values */
-            int reg_count = (pdu->data[0]) / 2;
-            for (int i = 0; i < reg_count && i < 125; i++)
+        } else if (pdu->data_len >= 3) {
+            /* Ответ: байт-счётчик + значения. Декодируем ровно столько
+             * регистров, сколько реально есть в кадре (а не столько,
+             * сколько заявил байт-счётчик). */
+            int reg_count = pdu->data[0] / 2;
+            int avail     = ((int)pdu->data_len - 1) / 2;
+            if (reg_count > avail) reg_count = avail;
+            if (reg_count > 125) reg_count = 125;
+            for (int i = 0; i < reg_count; i++)
                 dec->values[i] = (uint16_t)(pdu->data[1 + i*2] << 8) | pdu->data[1 + i*2 + 1];
             dec->value_count = (uint16_t)reg_count;
         }
@@ -304,8 +352,9 @@ void mbparse_decode_data(const mbparse_pdu_t *pdu, mbparse_decoded_t *dec) {
         break;
     case 0x17: /* Read/Write Multiple Registers */
         if (pdu->data_len >= 10) {
+            /* Запрос: адрес чтения, кол-во чтения, адрес записи, кол-во записи, ... */
             dec->start_addr = (uint16_t)(pdu->data[0] << 8) | pdu->data[1];
-            dec->count      = (uint16_t)(pdu->data[4] << 8) | pdu->data[5];
+            dec->count      = (uint16_t)(pdu->data[2] << 8) | pdu->data[3];
         }
         break;
     case 0x18: /* Read FIFO Queue */
@@ -442,21 +491,18 @@ const char *mbparse_error_str(mbparse_error_t err) {
 
 static void _print_data_decoded(char *buf, size_t *pos, size_t buf_sz, const mbparse_pdu_t *pdu, bool color) {
     mbparse_decoded_t dec;
+    (void)color;
     mbparse_decode_data(pdu, &dec);
     if (dec.write_single) {
-        int n = snprintf(buf + *pos, buf_sz - *pos, " addr=0x%04X value=0x%04X", dec.write_addr, dec.write_value);
-        if (n > 0) *pos += (size_t)n;
+        *pos = _mb_cat(buf, buf_sz, *pos, " addr=0x%04X value=0x%04X", dec.write_addr, dec.write_value);
     } else if (dec.count > 0) {
-        int n = snprintf(buf + *pos, buf_sz - *pos, " addr=0x%04X count=%u", dec.start_addr, dec.count);
-        if (n > 0) *pos += (size_t)n;
+        *pos = _mb_cat(buf, buf_sz, *pos, " addr=0x%04X count=%u", dec.start_addr, dec.count);
     }
     if (dec.value_count > 0) {
-        int n = snprintf(buf + *pos, buf_sz - *pos, " values[%u]=", dec.value_count);
-        if (n > 0) *pos += (size_t)n;
-        for (uint16_t i = 0; i < dec.value_count && *pos < buf_sz; i++) {
-            n = snprintf(buf + *pos, buf_sz - *pos, "%s0x%04X", i > 0 ? " " : "", dec.values[i]);
-            if (n > 0) *pos += (size_t)n;
-        }
+        uint16_t i;
+        *pos = _mb_cat(buf, buf_sz, *pos, " values[%u]=", dec.value_count);
+        for (i = 0; i < dec.value_count && *pos < buf_sz; i++)
+            *pos = _mb_cat(buf, buf_sz, *pos, "%s0x%04X", i > 0 ? " " : "", dec.values[i]);
     }
 }
 
@@ -465,29 +511,29 @@ static void _print_data_decoded(char *buf, size_t *pos, size_t buf_sz, const mbp
 int mbparse_sprint_pdu(char *buf, size_t buf_sz, const mbparse_pdu_t *pdu, bool color) {
     size_t pos = 0;
     if (color) {
-        pos += snprintf(buf, buf_sz, MB_GREY "slave=0x%02X" MB_RESET " ", pdu->slave_id);
+        pos = _mb_cat(buf, buf_sz, pos, MB_GREY "slave=0x%02X" MB_RESET " ", pdu->slave_id);
         if (pdu->is_exception) {
-            pos += snprintf(buf + pos, buf_sz - pos,
+            pos = _mb_cat(buf, buf_sz, pos,
                 MB_RED "err=0x%02X" MB_RESET " " MB_YELLOW "(%s)" MB_RESET,
                 pdu->function & 0x7F, mbparse_fcode_name(pdu->function & 0x7F));
-            pos += snprintf(buf + pos, buf_sz - pos,
+            pos = _mb_cat(buf, buf_sz, pos,
                 " " MB_MAGENTA "exc=0x%02X" MB_RESET " " MB_YELLOW "(%s)" MB_RESET,
                 pdu->exception_code, mbparse_exception_name(pdu->exception_code));
         } else {
-            pos += snprintf(buf + pos, buf_sz - pos,
+            pos = _mb_cat(buf, buf_sz, pos,
                 MB_CYAN "func=0x%02X" MB_RESET " " MB_YELLOW "(%s)" MB_RESET,
                 pdu->function, mbparse_fcode_name(pdu->function));
             _print_data_decoded(buf, &pos, buf_sz, pdu, color);
         }
     } else {
-        pos += snprintf(buf, buf_sz, "slave=0x%02X ", pdu->slave_id);
+        pos = _mb_cat(buf, buf_sz, pos, "slave=0x%02X ", pdu->slave_id);
         if (pdu->is_exception) {
-            pos += snprintf(buf + pos, buf_sz - pos,
+            pos = _mb_cat(buf, buf_sz, pos,
                 "err=0x%02X (%s) exc=0x%02X (%s)",
                 pdu->function & 0x7F, mbparse_fcode_name(pdu->function & 0x7F),
                 pdu->exception_code, mbparse_exception_name(pdu->exception_code));
         } else {
-            pos += snprintf(buf + pos, buf_sz - pos,
+            pos = _mb_cat(buf, buf_sz, pos,
                 "func=0x%02X (%s)", pdu->function, mbparse_fcode_name(pdu->function));
             _print_data_decoded(buf, &pos, buf_sz, pdu, color);
         }
@@ -497,20 +543,17 @@ int mbparse_sprint_pdu(char *buf, size_t buf_sz, const mbparse_pdu_t *pdu, bool 
 
 int mbparse_sprint_rtu(char *buf, size_t buf_sz, const mbparse_rtu_t *rtu, bool color) {
     size_t pos = 0;
-    if (color)
-        pos += snprintf(buf, buf_sz, MB_BOLD "RTU" MB_RESET "  ");
-    else
-        pos += snprintf(buf, buf_sz, "RTU  ");
-    pos += mbparse_sprint_pdu(buf + pos, buf_sz - pos, &rtu->pdu, color);
+    pos = _mb_cat(buf, buf_sz, pos, color ? MB_BOLD "RTU" MB_RESET "  " : "RTU  ");
+    pos += (size_t)mbparse_sprint_pdu(buf + pos, buf_sz - pos, &rtu->pdu, color);
     if (color) {
-        pos += snprintf(buf + pos, buf_sz - pos,
+        pos = _mb_cat(buf, buf_sz, pos,
             "  " MB_MAGENTA "CRC=0x%04X" MB_RESET " [%s%s%s]",
             rtu->crc,
             rtu->crc_status == 0 ? MB_GREEN : MB_RED,
             rtu->crc_status == 0 ? "OK" : "BAD",
             MB_RESET);
     } else {
-        pos += snprintf(buf + pos, buf_sz - pos,
+        pos = _mb_cat(buf, buf_sz, pos,
             "  CRC=0x%04X [%s]", rtu->crc, rtu->crc_status == 0 ? "OK" : "BAD");
     }
     return (int)pos;
@@ -518,65 +561,66 @@ int mbparse_sprint_rtu(char *buf, size_t buf_sz, const mbparse_rtu_t *rtu, bool 
 
 int mbparse_sprint_tcp(char *buf, size_t buf_sz, const mbparse_tcp_t *tcp, bool color) {
     size_t pos = 0;
-    if (color)
-        pos += snprintf(buf, buf_sz, MB_BOLD "TCP" MB_RESET "  tid=0x%04X  ", tcp->transaction_id);
-    else
-        pos += snprintf(buf, buf_sz, "TCP  tid=0x%04X  ", tcp->transaction_id);
-    pos += mbparse_sprint_pdu(buf + pos, buf_sz - pos, &tcp->pdu, color);
+    pos = _mb_cat(buf, buf_sz, pos,
+        color ? MB_BOLD "TCP" MB_RESET "  tid=0x%04X  " : "TCP  tid=0x%04X  ",
+        tcp->transaction_id);
+    pos += (size_t)mbparse_sprint_pdu(buf + pos, buf_sz - pos, &tcp->pdu, color);
     return (int)pos;
 }
 
 /* ── JSON sprint ────────────────────────────────────────── */
 
 static void _json_escape(char *buf, size_t *pos, size_t buf_sz, const char *s) {
-    while (*s && *pos < buf_sz) {
-        if (*s == '"' || *s == '\\') {
-            if (*pos + 1 < buf_sz) buf[(*pos)++] = '\\';
-        }
+    while (*s) {
+        if (*pos + 2 >= buf_sz) break;        /* место под символ и терминатор */
+        if (*s == '"' || *s == '\\') buf[(*pos)++] = '\\';
         buf[(*pos)++] = *s++;
     }
+    if (buf_sz) buf[*pos < buf_sz ? *pos : buf_sz - 1] = '\0';
 }
 
 int mbparse_sprint_json_pdu(char *buf, size_t buf_sz, const mbparse_pdu_t *pdu) {
     size_t pos = 0;
-    pos += snprintf(buf + pos, buf_sz - pos,
+    uint16_t i;
+    pos = _mb_cat(buf, buf_sz, pos,
         "{\"slave_id\":%u,\"function\":%u,\"function_name\":\"",
         pdu->slave_id, pdu->function);
-    pos += snprintf(buf + pos, buf_sz - pos, "%s\"",
-        mbparse_fcode_name(pdu->function));
+    _json_escape(buf, &pos, buf_sz, mbparse_fcode_name(pdu->function));
+    pos = _mb_cat(buf, buf_sz, pos, "\"");
     if (pdu->is_exception) {
-        pos += snprintf(buf + pos, buf_sz - pos,
-            ",\"is_exception\":true,\"exception_code\":%u,\"exception_name\":\"%s\"",
-            pdu->exception_code, mbparse_exception_name(pdu->exception_code));
+        pos = _mb_cat(buf, buf_sz, pos,
+            ",\"is_exception\":true,\"exception_code\":%u,\"exception_name\":\"",
+            pdu->exception_code);
+        _json_escape(buf, &pos, buf_sz, mbparse_exception_name(pdu->exception_code));
+        pos = _mb_cat(buf, buf_sz, pos, "\"");
     } else {
-        pos += snprintf(buf + pos, buf_sz - pos, ",\"is_exception\":false");
+        pos = _mb_cat(buf, buf_sz, pos, ",\"is_exception\":false");
     }
-    pos += snprintf(buf + pos, buf_sz - pos, ",\"data_len\":%u", pdu->data_len);
-    pos += snprintf(buf + pos, buf_sz - pos, ",\"data\":[");
-    for (uint16_t i = 0; i < pdu->data_len; i++) {
-        pos += snprintf(buf + pos, buf_sz - pos, "%s%u", i > 0 ? "," : "", pdu->data[i]);
-    }
-    pos += snprintf(buf + pos, buf_sz - pos, "]}");
+    pos = _mb_cat(buf, buf_sz, pos, ",\"data_len\":%u", pdu->data_len);
+    pos = _mb_cat(buf, buf_sz, pos, ",\"data\":[");
+    for (i = 0; i < pdu->data_len; i++)
+        pos = _mb_cat(buf, buf_sz, pos, "%s%u", i > 0 ? "," : "", pdu->data[i]);
+    pos = _mb_cat(buf, buf_sz, pos, "]}");
     return (int)pos;
 }
 
 int mbparse_sprint_json_rtu(char *buf, size_t buf_sz, const mbparse_rtu_t *rtu) {
     size_t pos = 0;
-    pos += snprintf(buf + pos, buf_sz - pos,
+    pos = _mb_cat(buf, buf_sz, pos,
         "{\"protocol\":\"RTU\",\"slave_id\":%u,\"crc\":%u,\"crc_ok\":%s,",
         rtu->pdu.slave_id, rtu->crc, rtu->crc_status == 0 ? "true" : "false");
-    pos += mbparse_sprint_json_pdu(buf + pos, buf_sz - pos, &rtu->pdu);
-    pos += snprintf(buf + pos, buf_sz - pos, "}");
+    pos += (size_t)mbparse_sprint_json_pdu(buf + pos, buf_sz - pos, &rtu->pdu);
+    pos = _mb_cat(buf, buf_sz, pos, "}");
     return (int)pos;
 }
 
 int mbparse_sprint_json_tcp(char *buf, size_t buf_sz, const mbparse_tcp_t *tcp) {
     size_t pos = 0;
-    pos += snprintf(buf + pos, buf_sz - pos,
+    pos = _mb_cat(buf, buf_sz, pos,
         "{\"protocol\":\"TCP\",\"transaction_id\":%u,\"protocol_id\":%u,\"length\":%u,\"unit_id\":%u,",
         tcp->transaction_id, tcp->protocol_id, tcp->length, tcp->unit_id);
-    pos += mbparse_sprint_json_pdu(buf + pos, buf_sz - pos, &tcp->pdu);
-    pos += snprintf(buf + pos, buf_sz - pos, "}");
+    pos += (size_t)mbparse_sprint_json_pdu(buf + pos, buf_sz - pos, &tcp->pdu);
+    pos = _mb_cat(buf, buf_sz, pos, "}");
     return (int)pos;
 }
 

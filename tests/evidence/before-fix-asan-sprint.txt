@@ -1,0 +1,16 @@
+# ДО ПРАВКИ: переполнение буфера вызывающего в форматтере (pos += snprintf)
+# команда: ./feeder_asan --repro 4
+# файл: mbparse.h:545 (mbparse_sprint_json_pdu)
+
+=================================================================
+==30273==ERROR: AddressSanitizer: stack-buffer-overflow on address 0x7b20811f0080 at pc 0x7f20840f1d1a bp 0x7ffef5fce000 sp 0x7ffef5fcd7a0
+WRITE of size 24 at 0x7b20811f0080 thread T0
+    #0 0x7f20840f1d19 in vsnprintf (/usr/lib/libasan.so.8+0xf1d19) (BuildId: ba7a5bf4abdf2db34a41045fa515601a1c4d1dea)
+    #1 0x7f20840f4065 in snprintf (/usr/lib/libasan.so.8+0xf4065) (BuildId: ba7a5bf4abdf2db34a41045fa515601a1c4d1dea)
+    #2 0x560bb68b2f75 in mbparse_sprint_json_pdu mbparse.h:545
+    #3 0x560bb68b44ed in repro tests/fuzz_frames.c:337
+    #4 0x560bb68b5e38 in main tests/fuzz_frames.c:387
+    #5 0x7f208342793d  (/usr/lib/libc.so.6+0x2793d) (BuildId: 420003f891b9a108242bbfa689a5168f8cd8afba)
+    #6 0x7f2083427a7b in __libc_start_main (/usr/lib/libc.so.6+0x27a7b) (BuildId: 420003f891b9a108242bbfa689a5168f8cd8afba)
+    #7 0x560bb68ac364 in _start (/home/lain/.hermes/profiles/forgessa/cache/scratch/feeder_asan+0x14364) (BuildId: 2604aabb3c8cd76093fcf708853c8c80576a8016)
+

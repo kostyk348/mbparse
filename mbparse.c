@@ -23,6 +23,14 @@
  *   mbparse -f frames.txt                Batch from file
  *   mbparse tcp 192.168.1.100:502        Poll Modbus TCP device
  */
+
+/* fileno() is POSIX, not ISO C99: expose it explicitly so that
+ * `-std=c99 -pedantic` builds (and modern gcc, where an implicit
+ * declaration is a hard error) still compile this file. */
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #define MBPARSE_IMPLEMENTATION
 #include "mbparse.h"
 
@@ -375,7 +383,6 @@ int main(int argc, char **argv) {
     if (argc < 2) { print_usage(); return 0; }
 
     int json_mode = 0;
-    int argi = 1;
 
     /* Check for flags before positional args */
     for (int i = 1; i < argc; i++) {

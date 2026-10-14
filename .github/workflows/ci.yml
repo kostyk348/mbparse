@@ -19,12 +19,20 @@ jobs:
         cc -O2 -Wall -Wextra -pedantic -std=c99 -o mbparse mbparse.c
       shell: bash
 
-    - name: Test
+    - name: Test (make test)
       run: |
-        ./mbparse "01 03 00 00 00 0A"
-        ./mbparse "01 03 00 00 00 0A" -j
-        ./mbparse -l
-        ./mbparse explain "01 03 00 00 00 0A"
+        if command -v make >/dev/null 2>&1; then
+          make test
+        else
+          echo "make not available — building and running the same tests directly"
+          cc -O2 -Wall -Wextra -pedantic -std=c99 -I. -o mbtest tests/test_mbparse.c
+          cc -O2 -Wall -Wextra -pedantic -std=c99 -I. -o fuzz_frames tests/fuzz_frames.c
+          ./mbtest
+          ./fuzz_frames 5000
+          ./fuzz_frames --repro
+          ./fuzz_frames --corpus corpus.txt 2000
+          sh tests/cli_smoke.sh ./mbparse corpus.txt
+        fi
       shell: bash
 
     - name: Build examples

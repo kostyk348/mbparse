@@ -1,0 +1,17 @@
+# ДО ПРАВКИ: выход за границу буфера при разборе PDU из одного байта-исключения
+# команда: gcc -std=c99 -g -O1 -fsanitize=address,undefined -I. -o feeder_asan tests/fuzz_frames.c
+# команда: ./feeder_asan --repro 1
+# файл: mbparse.h:210 (out->exception_code = data[1];)
+
+=================================================================
+==30265==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x7b9d26fe0011 at pc 0x55be4ff3ff42 bp 0x7fff67f81070 sp 0x7fff67f81060
+READ of size 1 at 0x7b9d26fe0011 thread T0
+    #0 0x55be4ff3ff41 in mbparse_decode_pdu mbparse.h:210
+    #1 0x55be4ff46762 in repro tests/fuzz_frames.c:287
+    #2 0x55be4ff48e38 in main tests/fuzz_frames.c:387
+    #3 0x7f7d2822793d  (/usr/lib/libc.so.6+0x2793d) (BuildId: 420003f891b9a108242bbfa689a5168f8cd8afba)
+    #4 0x7f7d28227a7b in __libc_start_main (/usr/lib/libc.so.6+0x27a7b) (BuildId: 420003f891b9a108242bbfa689a5168f8cd8afba)
+    #5 0x55be4ff3f364 in _start (/home/lain/.hermes/profiles/forgessa/cache/scratch/feeder_asan+0x14364) (BuildId: 2604aabb3c8cd76093fcf708853c8c80576a8016)
+
+0x7b9d26fe0011 is located 0 bytes after 1-byte region [0x7b9d26fe0010,0x7b9d26fe0011)
+allocated by thread T0 here:

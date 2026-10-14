@@ -1,0 +1,91 @@
+# Вывод make test на исправленном дереве (2026-10-14 21:46 MSK)
+# команда: make clean && make test
+
+cc -O2 -Wall -Wextra -pedantic -std=c99 -o mbparse mbparse.c 
+cc -O2 -Wall -Wextra -pedantic -std=c99 -I. -o tests/mbtest tests/test_mbparse.c 
+cc -O2 -Wall -Wextra -pedantic -std=c99 -I. -o tests/fuzz_frames tests/fuzz_frames.c 
+===== 1/4 unit tests =====
+./tests/mbtest
+mbparse unit tests
+-- CRC-16/MODBUS
+-- сборка кадра в тесте
+-- RTU: корректные кадры
+-- RTU: битый CRC
+-- TCP
+-- Граничные длины
+-- PDU-исключение: границы
+-- Заявленная длина > буфера
+-- decode_data: границы
+-- Таблицы
+-- hex-декодер
+-- Форматтеры: содержимое
+-- Форматтеры: границы буфера
+unit tests: 1723 checks, 0 failures — OK
+===== 2/4 frame feeder (20000 кадров) =====
+./tests/fuzz_frames 20000
+mbparse frame feeder — deterministic, seed=0x1234ABCD, frames=20000
+modes: 0 random / 1 truncated / 2 bit-flips / 3 declared-len>buffer / 4 valid(+crc) / 5 boundary lens
+
+fed=20000  reached parser=19144  rejected=856  crashes=0
+RTU: crc ok=3652  crc bad=13408   TCP frames=12386   bare PDU=19144   exception frames=16744
+modes hit: random=3334 truncated=3296 bitflips=3315 declared-len=3389 valid=3354 boundaries=3312
+formatter calls into small buffers=5699876, out-of-bounds/inconsistent=0
+-- фиддер: инварианты
+frame feeder: 14 checks, 0 failures — OK
+===== 3/4 CLI contract =====
+./tests/fuzz_frames --corpus tests/corpus.txt 2000 > /dev/null
+sh tests/cli_smoke.sh ./mbparse tests/corpus.txt
+CLI contract (./mbparse)
+  ok    RTU: slave_id = 1
+  ok    RTU: функция 0x03
+  ok    RTU: имя функции
+  ok    RTU: адрес из данных
+  ok    RTU: количество регистров
+  ok    RTU: CRC распознан
+  ok    RTU: вердикт по CRC
+  ok    JSON: протокол RTU
+  ok    JSON: crc_ok = true
+  ok    JSON: data_len = 4
+  ok    explain: смысл кадра
+  ok    exception: код 02
+  ok    exception: err=0x03
+  ok    TCP: протокол
+  ok    TCP: unit_id
+  ok    список функций
+  ok    список исключений
+  ok    версия
+  ok    подсказка
+  ok    битый CRC помечен
+  ok    битый CRC: кадр разобран
+  ok    короткий кадр
+  ok    CLI выжил на 1923 строках корпуса (код выхода 1)
+CLI contract: 23 checks, 0 failures — OK
+===== 4/4 sanitizers (ASan + UBSan) =====
+ASan+UBSan available (cc), 2000 frames under sanitizers
+mbparse unit tests
+-- CRC-16/MODBUS
+-- сборка кадра в тесте
+-- RTU: корректные кадры
+-- RTU: битый CRC
+-- TCP
+-- Граничные длины
+-- PDU-исключение: границы
+-- Заявленная длина > буфера
+-- decode_data: границы
+-- Таблицы
+-- hex-декодер
+-- Форматтеры: содержимое
+-- Форматтеры: границы буфера
+unit tests: 1723 checks, 0 failures — OK
+mbparse frame feeder — deterministic, seed=0x1234ABCD, frames=2000
+modes: 0 random / 1 truncated / 2 bit-flips / 3 declared-len>buffer / 4 valid(+crc) / 5 boundary lens
+
+fed=2000  reached parser=1911  rejected=89  crashes=0
+RTU: crc ok=333  crc bad=1365   TCP frames=1231   bare PDU=1911   exception frames=1676
+modes hit: random=339 truncated=364 bitflips=298 declared-len=349 valid=301 boundaries=349
+formatter calls into small buffers=567959, out-of-bounds/inconsistent=0
+-- фиддер: инварианты
+frame feeder: 14 checks, 0 failures — OK
+-- репро найденных багов
+repro: 155 checks, 0 failures
+ALL TESTS PASSED

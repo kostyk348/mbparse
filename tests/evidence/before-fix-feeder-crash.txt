@@ -1,0 +1,5 @@
+# ДО ПРАВКИ: обычная сборка (без санитайзера) фиддера падает на битых кадрах
+# команда: gcc -std=c99 -O2 -I. -o feeder tests/fuzz_frames.c && ./feeder 400
+
+*** stack smashing detected ***: terminated
+(процесс убит сигналом: exit=134 = 128+SIGABRT)
