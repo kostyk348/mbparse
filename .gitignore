@@ -5,6 +5,7 @@ mbparse
 demo
 tests/mbtest
 tests/fuzz_frames
+tests/jsoncheck
 tests/mbtest_asan
 tests/fuzz_frames_asan
 tests/corpus.txt

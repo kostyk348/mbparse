@@ -34,11 +34,12 @@ jobs:
           echo "make not available — building and running the same tests directly"
           cc -O2 -Wall -Wextra -pedantic -std=c99 -I. -o mbtest tests/test_mbparse.c
           cc -O2 -Wall -Wextra -pedantic -std=c99 -I. -o fuzz_frames tests/fuzz_frames.c
+          cc -O2 -Wall -Wextra -pedantic -std=c99 -I. -o jsoncheck tests/jsoncheck.c
           ./mbtest
           ./fuzz_frames 5000
           ./fuzz_frames --repro
           ./fuzz_frames --corpus corpus.txt 2000
-          sh tests/cli_smoke.sh ./mbparse corpus.txt
+          sh tests/cli_smoke.sh ./mbparse corpus.txt ./jsoncheck
         fi
       shell: bash
 

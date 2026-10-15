@@ -1,0 +1,68 @@
+# ПОСЛЕ ПРАВКИ: в вложенный объект PDU вернулось имя поля — "pdu":
+# (mbparse_sprint_json_rtu/_tcp в mbparse.h), вывод -j проверяется разбором.
+# команда: ./mbparse "<hex>" -j | tests/jsoncheck
+
+==================== 1. вывод CLI (`-j`) ====================
+
+$ ./mbparse "01 03 00 00 00 0A C5 CD" -j
+{"protocol":"RTU","slave_id":1,"crc":52677,"crc_ok":true,"pdu":{"slave_id":1,"function":3,"function_name":"Read Holding Registers","is_exception":false,"data_len":4,"data":[0,0,0,10]}}
+
+$ ./mbparse "01 83 02 C0 F1" -j
+{"protocol":"RTU","slave_id":1,"crc":61888,"crc_ok":true,"pdu":{"slave_id":1,"function":131,"function_name":"Unknown Function Code","is_exception":true,"exception_code":2,"exception_name":"Illegal Data Address","data_len":0,"data":[]}}
+
+$ ./mbparse "00 01 00 00 00 06 01 03 00 00 00 0A" -j
+{"protocol":"TCP","transaction_id":1,"protocol_id":0,"length":6,"unit_id":1,"pdu":{"slave_id":1,"function":3,"function_name":"Read Holding Registers","is_exception":false,"data_len":4,"data":[0,0,0,10]}}
+
+$ printf '%s\n' "01 03 00 00 00 0A C5 CD" | ./mbparse - -j          # stdin
+{"protocol":"RTU","slave_id":1,"crc":52677,"crc_ok":true,"pdu":{"slave_id":1,"function":3,"function_name":"Read Holding Registers","is_exception":false,"data_len":4,"data":[0,0,0,10]}}
+
+$ ./mbparse -f frames.txt -j                      # файловый режим
+# 01 03 00 00 00 0A C5 CD
+{"protocol":"RTU","slave_id":1,"crc":52677,"crc_ok":true,"pdu":{"slave_id":1,"function":3,"function_name":"Read Holding Registers","is_exception":false,"data_len":4,"data":[0,0,0,10]}}
+
+# 01 83 02 C0 F1
+{"protocol":"RTU","slave_id":1,"crc":61888,"crc_ok":true,"pdu":{"slave_id":1,"function":131,"function_name":"Unknown Function Code","is_exception":true,"exception_code":2,"exception_name":"Illegal Data Address","data_len":0,"data":[]}}
+
+
+==================== 2. валидатор JSON =========================
+
+$ ./mbparse "01 03 00 00 00 0A C5 CD" -j | tests/jsoncheck
+JSON OK (185 байт)
+  -> код возврата: 0
+
+$ ./mbparse "01 83 02 C0 F1" -j | tests/jsoncheck
+JSON OK (236 байт)
+  -> код возврата: 0
+
+$ ./mbparse "00 01 00 00 00 06 01 03 00 00 00 0A" -j | tests/jsoncheck
+JSON OK (204 байт)
+  -> код возврата: 0
+
+==================== 3. jq / json.load ==========================
+
+$ python3 -c "import json; d=json.load(open('rtu.json')); print(d['pdu'])"
+{'slave_id': 1, 'function': 3, 'function_name': 'Read Holding Registers', 'is_exception': False, 'data_len': 4, 'data': [0, 0, 0, 10]}
+
+$ jq -c .pdu rtu.json
+{"slave_id":1,"function":3,"function_name":"Read Holding Registers","is_exception":false,"data_len":4,"data":[0,0,0,10]}
+
+==================== 4. тесты зелёные ==========================
+
+$ make test
+unit tests: 1769 checks, 0 failures — OK
+fed=20000  reached parser=19144  rejected=856  crashes=0
+formatter calls into small buffers=5699876, out-of-bounds/inconsistent=0
+JSON-выводов разобрано валидатором=48590, невалидных=0
+frame feeder: 16 checks, 0 failures — OK
+CLI contract: 35 checks, 0 failures — OK
+unit tests: 1769 checks, 0 failures — OK
+fed=2000  reached parser=1911  rejected=89  crashes=0
+formatter calls into small buffers=567959, out-of-bounds/inconsistent=0
+JSON-выводов разобрано валидатором=4840, невалидных=0
+frame feeder: 16 checks, 0 failures — OK
+repro: 159 checks, 0 failures
+ALL TESTS PASSED
+
+$ ./tests/fuzz_frames --repro 5      # прицельный репро на этот дефект
+-- репро найденных багов
+repro: 4 checks, 0 failures

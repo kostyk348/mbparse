@@ -23,7 +23,8 @@ Note on Modbus RTU frames: the CRC is transmitted **low byte first**, so
 
 - **RTU and TCP** auto-detection with CRC-16 validation
 - **Human-readable** output with ANSI color (auto-detected)
-- **JSON output** (`-j`) for scripting pipelines
+- **JSON output** (`-j`) — one line per frame, nested PDU under the `"pdu"` key,
+  parses with `jq` / `json.load`
 - **Function code table** with descriptions (`-l`)
 - **Exception code** lookup (`-e`)
 - **Explain mode** (`explain`) — describes what a frame *means*
@@ -68,6 +69,31 @@ echo "01030000000AC5CD" | ./mbparse -
 ./mbparse tcp 192.168.1.100:502
 ```
 
+### JSON output (`-j`)
+
+One frame → one line of JSON on stdout (RTU/TCP is auto-detected). The decoded
+PDU is a **nested object under the key `"pdu"`**:
+
+```json
+{"protocol":"RTU","slave_id":1,"crc":52677,"crc_ok":true,"pdu":{"slave_id":1,"function":3,"function_name":"Read Holding Registers","is_exception":false,"data_len":4,"data":[0,0,0,10]}}
+{"protocol":"TCP","transaction_id":1,"protocol_id":0,"length":6,"unit_id":1,"pdu":{"slave_id":1,"function":3,"function_name":"Read Holding Registers","is_exception":false,"data_len":4,"data":[0,0,0,10]}}
+```
+
+| Level | Keys |
+|-------|------|
+| top (RTU) | `protocol`="RTU", `slave_id`, `crc`, `crc_ok`, `pdu` |
+| top (TCP) | `protocol`="TCP", `transaction_id`, `protocol_id`, `length`, `unit_id`, `pdu` |
+| `pdu` | `slave_id`, `function`, `function_name`, `is_exception`, `data_len`, `data[]`; when `is_exception` is true also `exception_code` and `exception_name` |
+
+`mbparse_sprint_json_pdu()` emits that PDU object itself — there it is the root
+object, without a wrapper. In `-f` (file) mode the hex of each frame is printed
+as a `# ...` comment line right before its JSON line, so `grep '^{'` (or
+filtering `^#`) gives pure JSON.
+
+Every `-j` line is checked to parse as JSON by `tests/jsoncheck` (a mini
+RFC 8259 parser, libc only) from `tests/cli_smoke.sh`, and structurally by
+`tests/test_mbparse.c` and `tests/fuzz_frames.c`.
+
 ## Build
 
 ```bash
@@ -103,9 +129,9 @@ It executes four stages:
 
 | Stage | What it does | Where |
 |-------|--------------|-------|
-| 1. Unit tests | CRC-16 vectors, valid RTU/TCP frames, exception frames, boundary lengths, incomplete frames, declared length > buffer, data-section decoding, lookup tables, hex decoder, formatter bounds | `tests/test_mbparse.c` |
-| 2. Frame feeder | deterministic (fixed seed `0x1234ABCD`) generator of corrupted frames: random bytes, truncated frames, bit-flips, `length` field larger than the buffer, synthetic valid frames with correct CRC, boundary lengths 0..9 | `tests/fuzz_frames.c` |
-| 3. CLI contract | asserts the CLI output promised above (slave id, function, address, count, CRC verdict, JSON, explain, exception, file mode survived) | `tests/cli_smoke.sh` |
+| 1. Unit tests | CRC-16 vectors, valid RTU/TCP frames, exception frames, boundary lengths, incomplete frames, declared length > buffer, data-section decoding, lookup tables, hex decoder, formatter bounds, JSON output contract (every formatter output is parsed, nested PDU has the `"pdu"` key) | `tests/test_mbparse.c` |
+| 2. Frame feeder | deterministic (fixed seed `0x1234ABCD`) generator of corrupted frames: random bytes, truncated frames, bit-flips, `length` field larger than the buffer, synthetic valid frames with correct CRC, boundary lengths 0..9; every JSON output of every frame is parsed by the mini-validator | `tests/fuzz_frames.c` |
+| 3. CLI contract | asserts the CLI output promised above (slave id, function, address, count, CRC verdict, explain, exception, file mode survived) **and parses every `-j` line as JSON** (stdin, single frame, TCP, exception, file mode) | `tests/cli_smoke.sh` + `tests/jsoncheck.c` |
 | 4. Sanitizers | the same binaries rebuilt with `-fsanitize=address,undefined` and run again (`ASan=1`; silently skipped where the toolchain has no ASan, e.g. MinGW) | `make test-asan` |
 
 Individual stages: `make test-unit`, `make test-fuzz`, `make test-cli`,
@@ -116,15 +142,31 @@ read past the frame is a hard AddressSanitizer failure; formatter calls go into
 a deliberately small buffer surrounded by canary bytes, so a write past the
 caller's buffer is caught even in a plain (non-sanitized) build.
 
+`tests/jsoncheck.c` builds a standalone `tests/jsoncheck` binary (stdin or
+`--file` → exit 0 if the text is valid JSON, 1 otherwise), and the same
+validator header (`tests/jsoncheck.h`) is compiled into the unit tests and the
+feeder, so JSON is checked structurally everywhere, never by substring.
+`cli_smoke.sh` takes the validator path as its third argument
+(`sh tests/cli_smoke.sh ./mbparse corpus.txt tests/jsoncheck`) and builds it on
+the spot if it is missing, so the CI fallback without `make` still checks JSON.
+
 ```
 $ make test
-...
-unit tests: 1723 checks, 0 failures — OK
+===== 1/4 unit tests =====
+unit tests: 1769 checks, 0 failures — OK
+===== 2/4 frame feeder (20000 кадров) =====
 fed=20000  reached parser=19144  rejected=856  crashes=0
 formatter calls into small buffers=5699876, out-of-bounds/inconsistent=0
-CLI contract: 23 checks, 0 failures — OK
-ASan+UBSan available, 2000 frames under sanitizers
-repro: 155 checks, 0 failures
+JSON-выводов разобрано валидатором=48590, невалидных=0
+frame feeder: 16 checks, 0 failures — OK
+===== 3/4 CLI contract =====
+CLI contract: 35 checks, 0 failures — OK
+===== 4/4 sanitizers (ASan + UBSan) =====
+ASan+UBSan available (cc), 2000 frames under sanitizers
+platform=Linux -> ASAN_OPTIONS=detect_leaks=1
+unit tests: 1769 checks, 0 failures — OK
+frame feeder: 16 checks, 0 failures — OK
+repro: 159 checks, 0 failures
 ALL TESTS PASSED
 ```
 
@@ -141,7 +183,9 @@ Additional feeder modes:
 
 The first run of the suite (and `-fsanitize=address`) crashed on the library
 and reported 821 failed checks. Raw sanitizer output is kept in
-`tests/evidence/`. Seven defects were fixed; each one has a regression test.
+`tests/evidence/`. Eight defects were fixed; each one has a regression test.
+Defect 8 was found later, while fixing the Windows build, and is the reason the
+JSON contract is now verified by parsing instead of substring matching.
 
 | # | Defect | Effect | Fixed in | Regression test |
 |---|--------|--------|----------|-----------------|
@@ -152,16 +196,20 @@ and reported 821 failed checks. Raw sanitizer output is kept in
 | 5 | `0x01..0x04` request decoding required `data_len >= 5`, but a request is exactly 4 bytes (address + count) | requests were not decoded at all (`count=0`), so `explain` stayed silent; 5-byte responses were misread as requests | request = 4 data bytes, otherwise response; register count clamped to the bytes actually present | `test_rtu_valid`, `test_decode_data_bounds` |
 | 6 | `0x03/0x04` responses decoded as many registers as the byte-count field claimed, regardless of the frame length | read `data[1..250]` of the PDU array for a 3-byte data section | register count clamped by `data_len` | `test_decode_data_bounds` |
 | 7 | `0x17` (Read/Write Multiple Registers) took the read count from `data[4..5]` (the write address) | wrong `count` in the decoded output | read count taken from `data[2..3]` | `test_rtu_valid` |
+| 8 | `mbparse_sprint_json_rtu()` / `mbparse_sprint_json_tcp()` wrote the nested PDU object right after `"crc_ok":<bool>,` — the field name `"pdu":` was missing | the whole `-j` output was structurally invalid JSON (`{"protocol":"RTU",...,"crc_ok":true,{"slave_id":1,...}}`): `jq` and `json.load` both refused it, and the tests passed anyway because they looked for substrings; 29 446 of 48 590 feeder frames produced invalid JSON | `"pdu":` printed before the nested object | `test_json_contract` (unit), `tests/cli_smoke.sh` (parses `-j` with `tests/jsoncheck`), `fuzz_frames --repro 5` |
+
+Evidence: `tests/evidence/before-fix-json-invalid.txt` (raw pre-fix `-j` output,
+verdict of the validator, `jq`/`json.load` errors, the failing runs) and
+`tests/evidence/after-fix-json-valid.txt` (same commands after the fix).
 
 `make test` is green on the current tree; on the pre-fix tree it failed with
 821 failed checks and crashed under ASan (see `tests/evidence/before-fix-*.txt`).
+With the JSON checks in place the pre-fix tree fails even earlier: 8 failing
+unit checks, 8 failing CLI checks and 29 446 invalid JSON outputs out of 48 590
+in the feeder — all from defect 8, which no substring check could see.
 
 ## Known issues (found, intentionally not changed)
 
-- **`-j` output is not valid JSON.** The PDU object is nested without a key:
-  `{"protocol":"RTU","crc":52677,"crc_ok":true,{"slave_id":1,...}}`. Feeding it
-  to `jq`/`json.load` fails. Fixing it means choosing a key name (`"pdu"`?),
-  i.e. changing the output contract — left to the owner.
 - `mbparse_decode_tcp()` does not verify that the `length` field matches the
   supplied buffer. It decodes `len - 7` bytes (never more, so it is memory-safe)
   and reports the field verbatim; a truncated capture is therefore not flagged

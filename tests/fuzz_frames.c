@@ -16,6 +16,9 @@
  * его конец ловит AddressSanitizer (см. цель `make test-asan`).
  * Плюс каждая вложенная строка форматируется в заведомо маленький буфер
  * с канарейками до и после — переполнение ловится и без санитайзера.
+ * Каждый JSON-вывод разбирается мини-валидатором (tests/jsoncheck.h): раньше
+ * подстрочные проверки пропускали структурно битый JSON (вложенный PDU без
+ * имени поля).
  *
  * Собирается: cc -std=c99 -Wall -Wextra -pedantic -I. -o tests/fuzz_frames tests/fuzz_frames.c
  *
@@ -40,6 +43,7 @@
 #include <string.h>
 
 #include "mbtest.h"
+#include "jsoncheck.h"
 
 /* ── Детерминированный PRNG (xorshift32) ─────────────────────────────────── */
 
@@ -92,10 +96,25 @@ typedef struct {
     unsigned long exceptions;   /* кадров-исключений */
     unsigned long fmt_calls;    /* вызовов форматтеров в малый буфер */
     unsigned long fmt_violations;
+    unsigned long json_calls;     /* сколько JSON-выводов разобрано валидатором */
+    unsigned long json_invalid;   /* сколько из них не является валидным JSON */
     unsigned long mode_hits[6];
 } stats_t;
 
 static stats_t st;
+
+/* JSON-вывод (в достаточно большой буфер) обязан разбираться целиком:
+ * дефект «вложенный PDU без имени поля» проходил именно здесь незамеченным. */
+static void json_probe(const char *text) {
+    char err[256];
+
+    st.json_calls++;
+    if (mb_json_validate(text, err, sizeof(err))) return;
+
+    st.json_invalid++;
+    if (st.json_invalid <= 3)
+        printf("  невалидный JSON: %s\n    вывод: %s\n", err, text);
+}
 
 static void fmt_probe(int which, const mbparse_pdu_t *pdu, const mbparse_rtu_t *rtu,
                       const mbparse_tcp_t *tcp) {
@@ -146,6 +165,7 @@ static void feed(const uint8_t *raw, size_t len, char *corpus_line, size_t corpu
         (void)mbparse_sprint_pdu(big, sizeof(big), &pdu, 0);
         (void)mbparse_sprint_pdu(big, sizeof(big), &pdu, 1);
         (void)mbparse_sprint_json_pdu(big, sizeof(big), &pdu);
+        json_probe(big);
         fmt_probe(0, &pdu, &rtu, &tcp);
         fmt_probe(1, &pdu, &rtu, &tcp);
         fmt_probe(2, &pdu, &rtu, &tcp);
@@ -160,6 +180,7 @@ static void feed(const uint8_t *raw, size_t len, char *corpus_line, size_t corpu
         (void)mbparse_sprint_rtu(big, sizeof(big), &rtu, 0);
         (void)mbparse_sprint_rtu(big, sizeof(big), &rtu, 1);
         (void)mbparse_sprint_json_rtu(big, sizeof(big), &rtu);
+        json_probe(big);
         fmt_probe(3, &pdu, &rtu, &tcp);
         fmt_probe(4, &pdu, &rtu, &tcp);
     }
@@ -172,6 +193,7 @@ static void feed(const uint8_t *raw, size_t len, char *corpus_line, size_t corpu
         mbparse_decode_data(&tcp.pdu, &dec);
         (void)mbparse_sprint_tcp(big, sizeof(big), &tcp, 0);
         (void)mbparse_sprint_json_tcp(big, sizeof(big), &tcp);
+        json_probe(big);
         fmt_probe(5, &pdu, &rtu, &tcp);
         fmt_probe(6, &pdu, &rtu, &tcp);
     }
@@ -348,6 +370,30 @@ static int repro(int only) {
         }
     }
 
+    /* 5. JSON-контракт: вложенный PDU обязан иметь имя поля.
+     *    Было: `{"protocol":"RTU",...,"crc_ok":true,{"slave_id":1,...}}` —
+     *    невалидный JSON (ключ "pdu" потерян), не парсился ни jq, ни json.load. */
+    if (only == 0 || only == 5) {
+        static const uint8_t raw[] = {0x01, 0x03, 0x00, 0x00, 0x00, 0x0A, 0xC5, 0xCD};
+        static const uint8_t tcpraw[] = {0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x01, 0x03, 0x00, 0x00, 0x00, 0x0A};
+        char buf[4096];
+        char err[256];
+        mbparse_rtu_t r;
+        mbparse_tcp_t t;
+
+        mbparse_decode_rtu(raw, sizeof(raw), &r);
+        (void)mbparse_sprint_json_rtu(buf, sizeof(buf), &r);
+        json_probe(buf);
+        CHECK(mb_json_validate(buf, err, sizeof(err)));
+        CHECK(strstr(buf, "\"pdu\":{\"slave_id\":1") != NULL);
+
+        mbparse_decode_tcp(tcpraw, sizeof(tcpraw), &t);
+        (void)mbparse_sprint_json_tcp(buf, sizeof(buf), &t);
+        json_probe(buf);
+        CHECK(mb_json_validate(buf, err, sizeof(err)));
+        CHECK(strstr(buf, "\"pdu\":{\"slave_id\":1") != NULL);
+    }
+
     printf("repro: %d checks, %d failures\n", mbtest.checks, mbtest.fails);
     return mbtest.fails ? 1 : 0;
 }
@@ -355,10 +401,11 @@ static int repro(int only) {
 /* ── main ────────────────────────────────────────────────────────────────── */
 
 static void print_usage(const char *argv0) {
-    printf("usage: %s [--seed N] [--corpus FILE] [--repro [1..4]] [N]\n", argv0);
+    printf("usage: %s [--seed N] [--corpus FILE] [--repro [1..5]] [N]\n", argv0);
     printf("  N = сколько кадров скормить (по умолчанию 20000)\n");
     printf("  --repro 1 = PDU-исключение в 1 байт, 2 = то же через TCP,\n");
-    printf("            3 = то же через RTU, 4 = форматтер в малый буфер\n");
+    printf("            3 = то же через RTU, 4 = форматтер в малый буфер,\n");
+    printf("            5 = JSON с вложенным PDU (имя поля \"pdu\")\n");
 }
 
 int main(int argc, char **argv) {
@@ -377,7 +424,7 @@ int main(int argc, char **argv) {
             corpus_path = argv[++i];
         } else if (strcmp(argv[i], "--repro") == 0) {
             want_repro = 1;
-            if (i + 1 < argc && argv[i + 1][0] >= '1' && argv[i + 1][0] <= '4')
+            if (i + 1 < argc && argv[i + 1][0] >= '1' && argv[i + 1][0] <= '5')
                 repro_only = (int)strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
@@ -435,6 +482,8 @@ int main(int argc, char **argv) {
            st.mode_hits[0], st.mode_hits[1], st.mode_hits[2], st.mode_hits[3], st.mode_hits[4], st.mode_hits[5]);
     printf("formatter calls into small buffers=%lu, out-of-bounds/inconsistent=%lu\n",
            st.fmt_calls, st.fmt_violations);
+    printf("JSON-выводов разобрано валидатором=%lu, невалидных=%lu\n",
+           st.json_calls, st.json_invalid);
     if (corpus_path) printf("corpus written: %s (%lu lines)\n", corpus_path, st.fed);
 
     mt_suite("фиддер: инварианты");
@@ -442,6 +491,8 @@ int main(int argc, char **argv) {
     CHECK(st.reached > 0);
     CHECK(st.rejected > 0);
     CHECK_EQ(st.fmt_violations, 0);
+    CHECK_EQ(st.json_invalid, 0);   /* каждый JSON-вывод разбирается целиком */
+    CHECK(st.json_calls > 0);       /* и он действительно проверялся */
     /* Все шесть режимов должны были отработать — иначе тест ничего не проверил. */
     CHECK(st.mode_hits[0] > 0);
     CHECK(st.mode_hits[1] > 0);

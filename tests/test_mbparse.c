@@ -30,6 +30,7 @@
 #include <string.h>
 
 #include "mbtest.h"
+#include "jsoncheck.h"
 
 /* ── Вспомогательное: сборка корректного RTU-кадра ──────────────────────────
  * Modbus RTU передаёт CRC младшим байтом вперёд, поэтому на линии:
@@ -478,6 +479,130 @@ static void test_format_content(void) {
     CHECK_HAS(buf, "\"is_exception\":false");
 }
 
+/* ── JSON: вывод обязан быть валидным JSON (разбор, а не подстроки) ─────────
+ * Регресс: у вложенного PDU не было имени поля —
+ *   {"protocol":"RTU",...,"crc_ok":true,{"slave_id":1,...}}
+ * Подстрочные проверки (CHECK_HAS) такой вывод пропускали: все обещанные
+ * фрагменты на месте, а строка целиком не парсится. Поэтому здесь стоит
+ * настоящий разбор (tests/jsoncheck.h) плюс проверка самого ключа "pdu".
+ * Контракт: у RTU/TCP вложенный PDU лежит под ключом "pdu".
+ */
+static int json_is_valid(const char *text, const char *what, const char *file, int line) {
+    char err[256];
+    mbtest.checks++;
+    if (mb_json_validate(text, err, sizeof(err))) return 1;
+    mbtest.fails++;
+    printf("  FAIL %s:%d: %s — вывод не парсится как JSON: %s\n        получено: %s\n",
+           file, line, what, err, text);
+    return 0;
+}
+#define CHECK_JSON(what, text) json_is_valid((text), (what), __FILE__, __LINE__)
+
+static void test_json_contract(void) {
+    static const uint8_t req[]    = {0x01, 0x03, 0x00, 0x00, 0x00, 0x0A, 0xC5, 0xCD};
+    static const uint8_t exc[]    = {0x01, 0x83, 0x02, 0xC0, 0xF1};
+    static const uint8_t badcrc[] = {0x01, 0x03, 0x00, 0x00, 0x00, 0x0A, 0x00, 0x00};
+    static const uint8_t tcpraw[] = {0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x01, 0x03, 0x00, 0x00, 0x00, 0x0A};
+    static const uint8_t pdu_resp[] = {0x01, 0x03, 0x04, 0x00, 0x2A, 0x01, 0x0B};
+    static const uint8_t pdu_req[]  = {0x03, 0x00, 0x00, 0x00, 0x0A};
+    char buf[4096];
+    char err[256];
+    mbparse_rtu_t f;
+    mbparse_tcp_t t;
+    mbparse_pdu_t pdu;
+
+    mt_suite("JSON: контракт вывода");
+
+    /* Сначала — сам валидатор: он обязан отвергать именно тот дефект и не
+     * пропускать «модные» ошибки структуры. Иначе тест ничего не гарантирует. */
+    CHECK(!mb_json_validate("{\"protocol\":\"RTU\",\"crc_ok\":true,{\"slave_id\":1}}",
+                            err, sizeof(err)));
+    CHECK(!mb_json_validate("{\"a\":1,}", err, sizeof(err)));
+    CHECK(!mb_json_validate("{\"a\":1} мусор", err, sizeof(err)));
+    CHECK(!mb_json_validate("{\"a\":01}", err, sizeof(err)));
+    CHECK(!mb_json_validate("{\"a\":\"\\q\"}", err, sizeof(err)));
+    CHECK(!mb_json_validate("[1,2,", err, sizeof(err)));
+    CHECK(!mb_json_validate("{a:1}", err, sizeof(err)));
+    CHECK(!mb_json_validate("{\"a\":1", err, sizeof(err)));
+    CHECK(mb_json_validate("{\"a\":[1,2.5,-3e+10,true,false,null,\"\\u00e9\\\"x\"]}",
+                           err, sizeof(err)));
+
+    /* RTU-запрос. */
+    mbparse_decode_rtu(req, sizeof(req), &f);
+    memset(buf, 0, sizeof(buf));
+    CHECK(mbparse_sprint_json_rtu(buf, sizeof(buf), &f) > 0);
+    CHECK_JSON("RTU: запрос", buf);
+    CHECK_HAS(buf, "\"protocol\":\"RTU\"");
+    CHECK_HAS(buf, "\"slave_id\":1");
+    CHECK_HAS(buf, "\"crc_ok\":true");
+    CHECK_HAS(buf, "\"pdu\":{\"slave_id\":1,\"function\":3");
+    CHECK_HAS(buf, "\"function_name\":\"Read Holding Registers\"");
+    CHECK_HAS(buf, "\"is_exception\":false");
+    CHECK_HAS(buf, "\"data_len\":4");
+    CHECK_HAS(buf, "\"data\":[0,0,0,10]");
+
+    /* RTU-ответ с данными: массив data сверяем со структурой, а не на глаз. */
+    {
+        uint8_t raw[64];
+        size_t n = rtu_frame(raw, pdu_resp + 1, sizeof(pdu_resp) - 1, pdu_resp[0]);
+        char want[512];
+        size_t w = 0;
+        uint16_t k;
+        mbparse_decode_rtu(raw, n, &f);
+        memset(buf, 0, sizeof(buf));
+        CHECK(mbparse_sprint_json_rtu(buf, sizeof(buf), &f) > 0);
+        CHECK_JSON("RTU: ответ с данными", buf);
+        CHECK_HAS(buf, "\"crc_ok\":true");
+        w += (size_t)snprintf(want + w, sizeof(want) - w, "\"data_len\":%u,\"data\":[",
+                              (unsigned)f.pdu.data_len);
+        for (k = 0; k < f.pdu.data_len; k++)
+            w += (size_t)snprintf(want + w, sizeof(want) - w, "%s%u",
+                                  k ? "," : "", (unsigned)f.pdu.data[k]);
+        snprintf(want + w, sizeof(want) - w, "]");
+        CHECK_HAS(buf, want);
+    }
+
+    /* Кадр-исключение и битый CRC — те же ключи, другой статус. */
+    mbparse_decode_rtu(exc, sizeof(exc), &f);
+    memset(buf, 0, sizeof(buf));
+    CHECK(mbparse_sprint_json_rtu(buf, sizeof(buf), &f) > 0);
+    CHECK_JSON("RTU: кадр-исключение", buf);
+    CHECK_HAS(buf, "\"pdu\":{\"slave_id\":1,\"function\":131");
+    CHECK_HAS(buf, "\"is_exception\":true");
+    CHECK_HAS(buf, "\"exception_code\":2");
+    CHECK_HAS(buf, "\"exception_name\":\"Illegal Data Address\"");
+
+    mbparse_decode_rtu(badcrc, sizeof(badcrc), &f);
+    memset(buf, 0, sizeof(buf));
+    CHECK(mbparse_sprint_json_rtu(buf, sizeof(buf), &f) > 0);
+    CHECK_JSON("RTU: битый CRC", buf);
+    CHECK_HAS(buf, "\"crc_ok\":false");
+
+    /* TCP. */
+    mbparse_decode_tcp(tcpraw, sizeof(tcpraw), &t);
+    memset(buf, 0, sizeof(buf));
+    CHECK(mbparse_sprint_json_tcp(buf, sizeof(buf), &t) > 0);
+    CHECK_JSON("TCP: запрос", buf);
+    CHECK_HAS(buf, "\"protocol\":\"TCP\"");
+    CHECK_HAS(buf, "\"unit_id\":1");
+    CHECK_HAS(buf, "\"pdu\":{\"slave_id\":1,\"function\":3");
+
+    /* Голый PDU — третий форматтер, у него вложенности нет. */
+    CHECK_EQ(mbparse_decode_pdu(pdu_req, sizeof(pdu_req), &pdu), MBPARSE_OK);
+    memset(buf, 0, sizeof(buf));
+    CHECK(mbparse_sprint_json_pdu(buf, sizeof(buf), &pdu) > 0);
+    CHECK_JSON("голый PDU: запрос", buf);
+    CHECK_HAS(buf, "\"data\":[0,0,0,10]");
+    CHECK(strstr(buf, "\"pdu\"") == NULL);   /* PDU сам себе корень */
+
+    /* Функции с длинными именами не должны ломать экранирование строки. */
+    CHECK_EQ(mbparse_decode_pdu(exc + 1, 2, &pdu), MBPARSE_OK);
+    memset(buf, 0, sizeof(buf));
+    CHECK(mbparse_sprint_json_pdu(buf, sizeof(buf), &pdu) > 0);
+    CHECK_JSON("голый PDU: исключение", buf);
+    CHECK_HAS(buf, "\"is_exception\":true");
+}
+
 /* ── Форматтеры: НЕвыход за границы вызывающего буфера ───────────────────────
  * Регресс: раньше pos += snprintf(...) накапливал длину «как если бы буфер был
  * бесконечным», buf_sz - pos уходил в минус (size_t), и следующий snprintf
@@ -597,6 +722,7 @@ int main(void) {
     test_decode_data_bounds();
     test_tables_and_hex();
     test_format_content();
+    test_json_contract();
     test_formatter_bounds();
     return mt_report("unit tests");
 }

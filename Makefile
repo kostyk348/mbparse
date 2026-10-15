@@ -22,8 +22,9 @@ ifeq ($(OS),Windows_NT)
 LDFLAGS += -lws2_32
 endif
 
-TESTS      = tests/mbtest tests/fuzz_frames
+TESTS      = tests/mbtest tests/fuzz_frames tests/jsoncheck
 CORPUS     = tests/corpus.txt
+JSONCHECK  = tests/jsoncheck
 FUZZ_ITERS ?= 20000
 CORPUS_ITERS ?= 2000
 ASAN_ITERS ?= 2000
@@ -41,6 +42,10 @@ tests/mbtest: tests/test_mbparse.c tests/mbtest.h mbparse.h
 tests/fuzz_frames: tests/fuzz_frames.c tests/mbtest.h mbparse.h
 	$(CC) $(CFLAGS) -I. -o $@ tests/fuzz_frames.c $(LDFLAGS)
 
+# Мини-валидатор JSON: контракт вывода -j проверяется разбором, а не подстрокой.
+tests/jsoncheck: tests/jsoncheck.c tests/jsoncheck.h
+	$(CC) $(CFLAGS) -I. -o $@ tests/jsoncheck.c $(LDFLAGS)
+
 # ── Единая точка входа ───────────────────────────────────────────────────────
 # 1) юнит-тесты API, 2) фиддер битых кадров, 3) контракт CLI,
 # 4) те же тесты под AddressSanitizer/UBSan.
@@ -51,7 +56,7 @@ test: mbparse $(TESTS)
 	./tests/fuzz_frames $(FUZZ_ITERS)
 	@echo "===== 3/4 CLI contract ====="
 	./tests/fuzz_frames --corpus $(CORPUS) $(CORPUS_ITERS) > /dev/null
-	sh tests/cli_smoke.sh ./mbparse $(CORPUS)
+	sh tests/cli_smoke.sh ./mbparse $(CORPUS) ./$(JSONCHECK)
 	@echo "===== 4/4 sanitizers (ASan + UBSan) ====="
 	@$(MAKE) --no-print-directory test-asan
 	@echo "ALL TESTS PASSED"
@@ -62,9 +67,9 @@ test-unit: tests/mbtest
 test-fuzz: tests/fuzz_frames
 	./tests/fuzz_frames $(FUZZ_ITERS)
 
-test-cli: mbparse tests/fuzz_frames
+test-cli: mbparse $(TESTS)
 	./tests/fuzz_frames --corpus $(CORPUS) $(CORPUS_ITERS) > /dev/null
-	sh tests/cli_smoke.sh ./mbparse $(CORPUS)
+	sh tests/cli_smoke.sh ./mbparse $(CORPUS) ./$(JSONCHECK)
 
 test-asan:
 	@if printf 'int main(void){return 0;}' | $(CC) -fsanitize=address,undefined -x c - -o /dev/null >/dev/null 2>&1; then \
@@ -86,5 +91,6 @@ examples:
 clean:
 	rm -f mbparse mbparse.exe
 	rm -f tests/mbtest tests/mbtest.exe tests/fuzz_frames tests/fuzz_frames.exe
+	rm -f tests/jsoncheck tests/jsoncheck.exe
 	rm -f tests/mbtest_asan tests/fuzz_frames_asan
 	rm -f tests/corpus.txt examples/demo examples/demo.exe

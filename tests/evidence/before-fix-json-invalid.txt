@@ -1,0 +1,79 @@
+# ДО ПРАВКИ: вывод -j структурно невалиден — вложенный объект PDU вставлен
+# без имени поля (`"pdu":` потерялся сразу после "crc_ok":<bool>,).
+# Дерево: mbparse.c/mbparse.h из HEAD (до правки), тесты — уже новые.
+# pre-fix бинарник: git archive HEAD | tar -x -C $PRE && make -C $PRE
+
+==================== 1. вывод CLI (`-j`) ====================
+
+$ ./mbparse "01 03 00 00 00 0A C5 CD" -j
+{"protocol":"RTU","slave_id":1,"crc":52677,"crc_ok":true,{"slave_id":1,"function":3,"function_name":"Read Holding Registers","is_exception":false,"data_len":4,"data":[0,0,0,10]}}
+
+$ ./mbparse "01 83 02 C0 F1" -j
+{"protocol":"RTU","slave_id":1,"crc":61888,"crc_ok":true,{"slave_id":1,"function":131,"function_name":"Unknown Function Code","is_exception":true,"exception_code":2,"exception_name":"Illegal Data Address","data_len":0,"data":[]}}
+
+$ ./mbparse "00 01 00 00 00 06 01 03 00 00 00 0A" -j
+{"protocol":"TCP","transaction_id":1,"protocol_id":0,"length":6,"unit_id":1,{"slave_id":1,"function":3,"function_name":"Read Holding Registers","is_exception":false,"data_len":4,"data":[0,0,0,10]}}
+
+==================== 2. валидатор JSON =========================
+
+$ ./mbparse "01 03 00 00 00 0A C5 CD" -j | tests/jsoncheck
+JSON INVALID: имя поля (строка в кавычках) ожидалось (позиция 57)
+  вывод: {"protocol":"RTU","slave_id":1,"crc":52677,"crc_ok":true,{"slave_id":1,"function":3,"function_name":"Read Holding Registers","is_exception":false,"data_len":4,"data":[0,0,0,10]}}
+
+  -> код возврата: 1
+
+$ ./mbparse "01 83 02 C0 F1" -j | tests/jsoncheck
+JSON INVALID: имя поля (строка в кавычках) ожидалось (позиция 57)
+  вывод: {"protocol":"RTU","slave_id":1,"crc":61888,"crc_ok":true,{"slave_id":1,"function":131,"function_name":"Unknown Function Code","is_exception":true,"exception_code":2,"exception_name":"Illegal Data Address","data_len":0,"data":[]}}
+
+  -> код возврата: 1
+
+$ ./mbparse "00 01 00 00 00 06 01 03 00 00 00 0A" -j | tests/jsoncheck
+JSON INVALID: имя поля (строка в кавычках) ожидалось (позиция 76)
+  вывод: {"protocol":"TCP","transaction_id":1,"protocol_id":0,"length":6,"unit_id":1,{"slave_id":1,"function":3,"function_name":"Read Holding Registers","is_exception":false,"data_len":4,"data":[0,0,0,10]}}
+
+  -> код возврата: 1
+
+==================== 3. jq / json.load ==========================
+
+$ python3 -c "import json; json.load(open('rtu.json'))"
+    obj, end = self.scan_once(s, idx)
+               ~~~~~~~~~~~~~~^^^^^^^^
+json.decoder.JSONDecodeError: Expecting property name enclosed in double quotes: line 1 column 58 (char 57)
+
+$ jq . rtu.json
+jq: parse error: Objects must consist of key:value pairs at line 1, column 178
+
+==================== 4. новые проверки падают ==================
+
+$ make test        # падает уже на стадии 1/4
+  FAIL tests/test_mbparse.c:534: RTU: запрос — вывод не парсится как JSON: имя поля (строка в кавычках) ожидалось (позиция 57)
+  FAIL tests/test_mbparse.c:538: ""pdu":{"slave_id":1,"function":3" not found in "{"protocol":"RTU","slave_id":1,"crc":52677,"crc_ok":true,{"slave_id":1,"function":3,"function_name":"Read Holding Registers","is_exception":false,"data_len":4,"data":[0,0,0,10]}}"  [JSON: контракт вывода]
+  FAIL tests/test_mbparse.c:554: RTU: ответ с данными — вывод не парсится как JSON: имя поля (строка в кавычках) ожидалось (позиция 57)
+  FAIL tests/test_mbparse.c:569: RTU: кадр-исключение — вывод не парсится как JSON: имя поля (строка в кавычках) ожидалось (позиция 57)
+  FAIL tests/test_mbparse.c:570: ""pdu":{"slave_id":1,"function":131" not found in "{"protocol":"RTU","slave_id":1,"crc":61888,"crc_ok":true,{"slave_id":1,"function":131,"function_name":"Unknown Function Code","is_exception":true,"exception_code":2,"exception_name":"Illegal Data Address","data_len":0,"data":[]}}"  [JSON: контракт вывода]
+  FAIL tests/test_mbparse.c:578: RTU: битый CRC — вывод не парсится как JSON: имя поля (строка в кавычках) ожидалось (позиция 54)
+  FAIL tests/test_mbparse.c:585: TCP: запрос — вывод не парсится как JSON: имя поля (строка в кавычках) ожидалось (позиция 76)
+  FAIL tests/test_mbparse.c:588: ""pdu":{"slave_id":1,"function":3" not found in "{"protocol":"TCP","transaction_id":1,"protocol_id":0,"length":6,"unit_id":1,{"slave_id":1,"function":3,"function_name":"Read Holding Registers","is_exception":false,"data_len":4,"data":[0,0,0,10]}}"  [JSON: контракт вывода]
+unit tests: 1769 checks, 8 failures — FAIL
+
+$ sh tests/cli_smoke.sh ./mbparse corpus.txt ./tests/jsoncheck
+  FAIL  JSON: вложенный PDU под ключом pdu
+  FAIL  JSON: RTU-ответ: вывод не парсится как JSON
+  FAIL  JSON: кадр-исключение: вывод не парсится как JSON
+  FAIL  TCP: вложенный PDU под ключом pdu
+  FAIL  JSON: TCP-кадр: вывод не парсится как JSON
+  FAIL  JSON: stdin: вывод не парсится как JSON
+  FAIL  JSON: файловый режим, кадр 1: вывод не парсится как JSON
+  FAIL  JSON: файловый режим, кадр 2: вывод не парсится как JSON
+CLI contract: 35 checks, 8 failures — FAIL
+
+$ ./tests/fuzz_frames 20000
+  невалидный JSON: имя поля (строка в кавычках) ожидалось (позиция 59)
+  невалидный JSON: имя поля (строка в кавычках) ожидалось (позиция 80)
+  невалидный JSON: имя поля (строка в кавычках) ожидалось (позиция 60)
+JSON-выводов разобрано валидатором=48590, невалидных=29446
+frame feeder: 16 checks, 1 failures — FAIL
+
+Итог: 8 провалов в юнит-тестах, 8 в контракте CLI, 29 446 из 48 590
+JSON-выводов фиддера не разбираются (все — одна и та же причина).

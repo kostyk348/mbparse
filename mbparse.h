@@ -625,10 +625,15 @@ int mbparse_sprint_json_pdu(char *buf, size_t buf_sz, const mbparse_pdu_t *pdu) 
     return (int)pos;
 }
 
+/* Ключи pdu заданы явно: раньше вложенный объект PDU печатался сразу после
+ * `"crc_ok":%s,` без имени поля, и весь вывод -j был невалидным JSON
+ * (`{"...","crc_ok":true,{"slave_id":1,...}}`) — не парсился ни jq, ни
+ * json.load. Контракт: у RTU/TCP вложенный PDU лежит под ключом "pdu".
+ */
 int mbparse_sprint_json_rtu(char *buf, size_t buf_sz, const mbparse_rtu_t *rtu) {
     size_t pos = 0;
     pos = _mb_cat(buf, buf_sz, pos,
-        "{\"protocol\":\"RTU\",\"slave_id\":%u,\"crc\":%u,\"crc_ok\":%s,",
+        "{\"protocol\":\"RTU\",\"slave_id\":%u,\"crc\":%u,\"crc_ok\":%s,\"pdu\":",
         rtu->pdu.slave_id, rtu->crc, rtu->crc_status == 0 ? "true" : "false");
     pos += (size_t)mbparse_sprint_json_pdu(buf + pos, buf_sz - pos, &rtu->pdu);
     pos = _mb_cat(buf, buf_sz, pos, "}");
@@ -638,7 +643,7 @@ int mbparse_sprint_json_rtu(char *buf, size_t buf_sz, const mbparse_rtu_t *rtu) 
 int mbparse_sprint_json_tcp(char *buf, size_t buf_sz, const mbparse_tcp_t *tcp) {
     size_t pos = 0;
     pos = _mb_cat(buf, buf_sz, pos,
-        "{\"protocol\":\"TCP\",\"transaction_id\":%u,\"protocol_id\":%u,\"length\":%u,\"unit_id\":%u,",
+        "{\"protocol\":\"TCP\",\"transaction_id\":%u,\"protocol_id\":%u,\"length\":%u,\"unit_id\":%u,\"pdu\":",
         tcp->transaction_id, tcp->protocol_id, tcp->length, tcp->unit_id);
     pos += (size_t)mbparse_sprint_json_pdu(buf + pos, buf_sz - pos, &tcp->pdu);
     pos = _mb_cat(buf, buf_sz, pos, "}");
