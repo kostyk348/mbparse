@@ -6,6 +6,18 @@ LDFLAGS?=
 # если тулчейн их не поддерживает (например, MinGW в Windows-CI).
 SANFLAGS ?= -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer
 
+# ── Leak-детектор платформо-зависим ──────────────────────────────────────────
+# LeakSanitizer есть только в Linux-сборке ASan. На macOS его нет: рантайм при
+# ASAN_OPTIONS=detect_leaks=1 сразу аварийно завершает процесс
+# ("AddressSanitizer: detect_leaks is not supported on this platform",
+# Abort trap: 6 / код 134) — падает не тест, а само требование. Поэтому на
+# Darwin leak-детектор не требуем; ASan как таковой (переполнения буфера,
+# use-after-free) работает и там. Результат вычисляется в переменные, чтобы
+# ветку можно было проверить не только на маке:
+#     make UNAME_S=Darwin -n test-asan
+UNAME_S         ?= $(shell uname -s)
+ASAN_DETECT_LEAKS ?= $(if $(filter Darwin,$(UNAME_S)),0,1)
+
 ifeq ($(OS),Windows_NT)
 LDFLAGS += -lws2_32
 endif
@@ -57,11 +69,12 @@ test-cli: mbparse tests/fuzz_frames
 test-asan:
 	@if printf 'int main(void){return 0;}' | $(CC) -fsanitize=address,undefined -x c - -o /dev/null >/dev/null 2>&1; then \
 		echo "ASan+UBSan available ($(CC)), $(ASAN_ITERS) frames under sanitizers"; \
+		echo "platform=$(UNAME_S) -> ASAN_OPTIONS=detect_leaks=$(ASAN_DETECT_LEAKS)"; \
 		$(CC) $(CFLAGS) $(SANFLAGS) -I. -o tests/mbtest_asan tests/test_mbparse.c $(LDFLAGS) && \
 		$(CC) $(CFLAGS) $(SANFLAGS) -I. -o tests/fuzz_frames_asan tests/fuzz_frames.c $(LDFLAGS) && \
-		ASAN_OPTIONS=detect_leaks=1 ./tests/mbtest_asan && \
-		ASAN_OPTIONS=detect_leaks=1 ./tests/fuzz_frames_asan $(ASAN_ITERS) && \
-		ASAN_OPTIONS=detect_leaks=1 ./tests/fuzz_frames_asan --repro; \
+		ASAN_OPTIONS=detect_leaks=$(ASAN_DETECT_LEAKS) ./tests/mbtest_asan && \
+		ASAN_OPTIONS=detect_leaks=$(ASAN_DETECT_LEAKS) ./tests/fuzz_frames_asan $(ASAN_ITERS) && \
+		ASAN_OPTIONS=detect_leaks=$(ASAN_DETECT_LEAKS) ./tests/fuzz_frames_asan --repro; \
 	else \
 		echo "ASan/UBSan not supported by $(CC) — sanitizer run skipped"; \
 	fi
