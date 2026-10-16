@@ -1,6 +1,9 @@
 # mbparse — Modbus RTU/TCP frame analyzer
 
 [![CI](https://github.com/kostyk348/mbparse/actions/workflows/ci.yml/badge.svg)](https://github.com/kostyk348/mbparse/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/kostyk348/mbparse?sort=semver&color=blue)](https://github.com/kostyk348/mbparse/releases)
+[![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/kostyk348/mbparse/blob/master/LICENSE)
+[![Last commit](https://img.shields.io/github/last-commit/kostyk348/mbparse?branch=master)](https://github.com/kostyk348/mbparse/commits/master)
 
 Zero-dependency C99 CLI tool for parsing, validating, and explaining Modbus frames.
 
@@ -51,21 +54,27 @@ mbparse tcp <host:port>    Query Modbus TCP device
 
 ```bash
 # Decode a Read Holding Registers request (RTU)
+
 ./mbparse "01 03 00 00 00 0A C5 CD"
 
 # Decode without spaces, output JSON
+
 ./mbparse 01030000000AC5CD -j
 
 # Pipe from stdin
+
 echo "01030000000AC5CD" | ./mbparse -
 
 # Batch from hex dump file
+
 ./mbparse -f dump.txt
 
 # Explain what a frame does
+
 ./mbparse explain "01 03 00 00 00 0A C5 CD"
 
 # Live TCP query
+
 ./mbparse tcp 192.168.1.100:502
 ```
 
