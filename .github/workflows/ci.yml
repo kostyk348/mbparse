@@ -5,47 +5,140 @@ on: [push, pull_request]
 jobs:
   build:
     strategy:
+      # Упавшая нога не должна скрывать остальные пять: отчёт обязан показывать
+      # каждую из шести проверок отдельно.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         cc: [gcc, clang]
 
     runs-on: ${{ matrix.os }}
 
+    env:
+      # Матрица управляет настоящей сборкой: выбранный компилятор уходит и в
+      # прямые вызовы ниже, и в make (там CC берётся из окружения). Голый `cc`
+      # здесь больше не используется — именно из-за него ноги gcc и clang на
+      # windows-latest собирали один и тот же MinGW GCC.
+      CC: ${{ matrix.cc }}
+
     steps:
     - uses: actions/checkout@v4
 
-    - name: Build
+    # Ловушка macOS: /usr/bin/gcc — это Apple clang, а не GCC. Чтобы нога gcc
+    # была честной, ставим настоящий GCC из Homebrew и переключаем CC на
+    # него. Проверка личности компилятора ниже иначе завалит ногу.
+    - name: Real GCC on macOS (/usr/bin/gcc is Apple clang)
+      if: matrix.os == 'macos-latest' && matrix.cc == 'gcc'
+      shell: bash
       run: |
-        # On Windows `cc` is MinGW-w64 GCC, which ignores the MSVC-only
+        set -euo pipefail
+        brew list --versions gcc >/dev/null 2>&1 || brew install gcc
+        gcc_bin=$(ls -1 "$(brew --prefix)"/bin/gcc-[0-9]* | sort -V | tail -1)
+        echo "CC=$gcc_bin" >> "$GITHUB_ENV"
+        echo "macOS gcc leg -> $gcc_bin"
+
+    # Ловушка Windows: штатный `clang` целится в MSVC ABI, а проект собирается
+    # MinGW-w64-заголовками и линкуется с ws2_32. Переводим clang на GNU-триплет;
+    # если MinGW-сискроуза он не находит — добираем clang из MSYS2 (он собран
+    # сразу под x86_64-w64-mingw32). Что сработало — печатается в лог.
+    - name: MinGW-targeted clang on Windows
+      if: matrix.os == 'windows-latest' && matrix.cc == 'clang'
+      shell: bash
+      run: |
+        set -euo pipefail
+        probe() {
+          printf 'int main(void){return 0;}\n' > probe.c
+          $1 --target=x86_64-w64-mingw32 probe.c -lws2_32 -o probe.exe >/dev/null 2>&1
+        }
+        if probe clang; then
+          echo "CC=clang --target=x86_64-w64-mingw32" >> "$GITHUB_ENV"
+          echo "windows clang leg -> clang, MinGW-w64 sysroot from Git for Windows"
+          exit 0
+        fi
+        echo "bundled clang finds no MinGW-w64 sysroot — installing MSYS2 clang"
+        /c/msys64/usr/bin/pacman.exe -S --noconfirm --needed \
+          mingw-w64-x86_64-clang mingw-w64-x86_64-gcc
+        if probe /c/msys64/mingw64/bin/clang; then
+          echo "CC=C:/msys64/mingw64/bin/clang --target=x86_64-w64-mingw32" >> "$GITHUB_ENV"
+          echo "windows clang leg -> C:/msys64/mingw64/bin/clang (MSYS2, MinGW-w64 target)"
+          exit 0
+        fi
+        echo "::error::no clang on this runner can build the x86_64-w64-mingw32 target" >&2
+        clang --version >&2 || true
+        exit 1
+
+    # Гейт против декоративной матрицы: драйвер обязан быть тем, что заявлено
+    # в matrix.cc. На macOS это ловит /usr/bin/gcc == Apple clang, на Windows —
+    # случай, когда clang-нога оказалась gcc.
+    - name: Compiler identity (matrix.cc is real)
+      shell: bash
+      run: |
+        set -euo pipefail
+        want="${{ matrix.cc }}"
+        cc_bin="${CC%% *}"
+        echo "matrix: os=${{ matrix.os }} cc=$want"
+        echo "resolved driver: $cc_bin"
+        command -v "$cc_bin"
+        first=$("$cc_bin" --version 2>&1 | head -n 1 || true)
+        echo "version: $first"
+        case "$want" in
+          clang)
+            case "$first" in
+              *clang*|*Clang*) ;;
+              *) echo "::error::cc=clang leg runs '$first'" >&2; exit 1 ;;
+            esac
+            ;;
+          gcc)
+            case "$first" in
+              *clang*|*Clang*) echo "::error::cc=gcc leg is clang behind an alias: '$first'" >&2; exit 1 ;;
+              *gcc*|*GCC*|*Free\ Software\ Foundation*) ;;
+              *) echo "::error::cc=gcc leg runs '$first'" >&2; exit 1 ;;
+            esac
+            ;;
+          *) echo "::error::unexpected matrix.cc=$want" >&2; exit 1 ;;
+        esac
+        echo "compiler identity OK: $want"
+
+    - name: Build
+      shell: bash
+      run: |
+        set -euo pipefail
+        # On Windows the toolchain is MinGW-w64, which ignores the MSVC-only
         # `#pragma comment(lib, "ws2_32.lib")` inside mbparse.c — it emits
         # "warning: ignoring '#pragma comment '" under -pedantic and does not
         # link the library. Name it explicitly, so the build does not depend on
         # a pragma only MSVC honours (see Makefile, OS=Windows_NT).
         LDFLAGS=""
         if [ "$RUNNER_OS" = "Windows" ]; then LDFLAGS="-lws2_32"; fi
-        cc -O2 -Wall -Wextra -pedantic -std=c99 -o mbparse mbparse.c $LDFLAGS
-      shell: bash
+        echo "building with: $CC"
+        $CC -O2 -Wall -Wextra -pedantic -std=c99 -o mbparse mbparse.c $LDFLAGS
 
     - name: Test (make test)
+      shell: bash
       run: |
+        set -euo pipefail
         if command -v make >/dev/null 2>&1; then
           make test
         else
           echo "make not available — building and running the same tests directly"
-          cc -O2 -Wall -Wextra -pedantic -std=c99 -I. -o mbtest tests/test_mbparse.c
-          cc -O2 -Wall -Wextra -pedantic -std=c99 -I. -o fuzz_frames tests/fuzz_frames.c
-          cc -O2 -Wall -Wextra -pedantic -std=c99 -I. -o jsoncheck tests/jsoncheck.c
+          # Same link flag the Makefile adds under Windows_NT: MinGW-w64 does
+          # not honour the MSVC-only #pragma comment(lib, "ws2_32.lib").
+          LDFLAGS=""
+          if [ "$RUNNER_OS" = "Windows" ]; then LDFLAGS="-lws2_32"; fi
+          $CC -O2 -Wall -Wextra -pedantic -std=c99 -I. -o mbtest tests/test_mbparse.c $LDFLAGS
+          $CC -O2 -Wall -Wextra -pedantic -std=c99 -I. -o fuzz_frames tests/fuzz_frames.c $LDFLAGS
+          $CC -O2 -Wall -Wextra -pedantic -std=c99 -I. -o jsoncheck tests/jsoncheck.c $LDFLAGS
           ./mbtest
           ./fuzz_frames 5000
           ./fuzz_frames --repro
           ./fuzz_frames --corpus corpus.txt 2000
           sh tests/cli_smoke.sh ./mbparse corpus.txt ./jsoncheck
         fi
-      shell: bash
 
     - name: Build examples
-      run: |
-        cd examples
-        cc -O2 -Wall -Wextra -pedantic -std=c99 -o demo demo.c
-        ./demo
       shell: bash
+      run: |
+        set -euo pipefail
+        cd examples
+        $CC -O2 -Wall -Wextra -pedantic -std=c99 -o demo demo.c
+        ./demo

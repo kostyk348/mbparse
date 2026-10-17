@@ -125,6 +125,26 @@ gcc -O2 -o mbparse mbparse.c -lws2_32   # MinGW
   keeps its documented name regardless of include order. Without that guard the
   field silently becomes `_exception_code` when a Windows header comes first.
 
+## CI
+
+`.github/workflows/ci.yml` runs six legs — `{ubuntu, windows, macos}-latest` ×
+`{gcc, clang}` — and the matrix value actually selects the compiler: `CC` is set
+from `matrix.cc` and every build step (including `make test`) goes through it.
+
+Two runner traps make that non-obvious, and both are handled explicitly:
+
+* **macOS** — `/usr/bin/gcc` is Apple clang. The `gcc` leg installs real GCC
+  from Homebrew and switches `CC` to the versioned binary.
+* **Windows** — the bundled `clang` targets the MSVC ABI, while this project
+  builds against MinGW-w64 headers and links `ws2_32`. The `clang` leg points
+  clang at `--target=x86_64-w64-mingw32` and, if it cannot find a MinGW sysroot,
+  falls back to MSYS2's mingw-w64 clang.
+
+A separate `Compiler identity` step fails the leg if the driver that actually
+runs is not the one the matrix claims (e.g. an `gcc` leg silently running
+Apple clang). Local runs of every check are recorded in
+`tests/evidence/ci-matrix-honest.txt`.
+
 ## Testing
 
 Everything runs through one entry point — no external test framework, no

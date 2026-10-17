@@ -1,0 +1,411 @@
+# Локальный прогон матрицы CI: шесть ног — шесть компиляторов (2026-10-17 15:52 MSK)
+# хост: Linux 7.0.0-1-cachyos x86_64
+# gcc: gcc (GCC) 16.1.1 20260625
+# clang: clang version 22.1.6
+# mingw-gcc: x86_64-w64-mingw32-gcc (GCC) 16.1.0
+# wine: wine-11.12
+#
+# Что проверено здесь: сборка и полный make test под gcc и clang нативно,
+# mingw-сборка (x86_64-w64-mingw32-gcc) и clang --target=x86_64-w64-mingw32,
+# прогон .exe под wine (юнит-тесты, фиддер, CLI-контракт), гейт личности
+# компилятора в обе стороны (в т.ч. два негативных случая), CI-fallback без make.
+# Только в CI: macOS-ноги (Apple clang и Homebrew GCC) и windows-latest
+# (сискроуз MinGW для clang, наличие make).
+
+# make clean && CC=gcc make test
+gcc -O2 -Wall -Wextra -pedantic -std=c99 -o mbparse mbparse.c 
+gcc -O2 -Wall -Wextra -pedantic -std=c99 -I. -o tests/mbtest tests/test_mbparse.c 
+gcc -O2 -Wall -Wextra -pedantic -std=c99 -I. -o tests/fuzz_frames tests/fuzz_frames.c 
+gcc -O2 -Wall -Wextra -pedantic -std=c99 -I. -o tests/jsoncheck tests/jsoncheck.c 
+===== 1/4 unit tests =====
+./tests/mbtest
+mbparse unit tests
+-- CRC-16/MODBUS
+-- сборка кадра в тесте
+-- RTU: корректные кадры
+-- RTU: битый CRC
+-- TCP
+-- Граничные длины
+-- PDU-исключение: границы
+-- Заявленная длина > буфера
+-- decode_data: границы
+-- Таблицы
+-- hex-декодер
+-- Форматтеры: содержимое
+-- JSON: контракт вывода
+-- Форматтеры: границы буфера
+unit tests: 1769 checks, 0 failures — OK
+===== 2/4 frame feeder (20000 кадров) =====
+./tests/fuzz_frames 20000
+mbparse frame feeder — deterministic, seed=0x1234ABCD, frames=20000
+modes: 0 random / 1 truncated / 2 bit-flips / 3 declared-len>buffer / 4 valid(+crc) / 5 boundary lens
+
+fed=20000  reached parser=19144  rejected=856  crashes=0
+RTU: crc ok=3652  crc bad=13408   TCP frames=12386   bare PDU=19144   exception frames=16744
+modes hit: random=3334 truncated=3296 bitflips=3315 declared-len=3389 valid=3354 boundaries=3312
+formatter calls into small buffers=5699876, out-of-bounds/inconsistent=0
+JSON-выводов разобрано валидатором=48590, невалидных=0
+-- фиддер: инварианты
+frame feeder: 16 checks, 0 failures — OK
+===== 3/4 CLI contract =====
+./tests/fuzz_frames --corpus tests/corpus.txt 2000 > /dev/null
+sh tests/cli_smoke.sh ./mbparse tests/corpus.txt ./tests/jsoncheck
+CLI contract (./mbparse)
+  ok    RTU: slave_id = 1
+  ok    RTU: функция 0x03
+  ok    RTU: имя функции
+  ok    RTU: адрес из данных
+  ok    RTU: количество регистров
+  ok    RTU: CRC распознан
+  ok    RTU: вердикт по CRC
+  ok    JSON: протокол RTU
+  ok    JSON: crc_ok = true
+  ok    JSON: data_len = 4
+  ok    JSON: вложенный PDU под ключом pdu
+  ok    JSON: RTU-ответ (вывод разобран как JSON целиком)
+  ok    explain: смысл кадра
+  ok    exception: код 02
+  ok    exception: err=0x03
+  ok    JSON: кадр-исключение
+  ok    JSON: код исключения
+  ok    JSON: кадр-исключение (вывод разобран как JSON целиком)
+  ok    TCP: протокол
+  ok    TCP: unit_id
+  ok    TCP: вложенный PDU под ключом pdu
+  ok    JSON: TCP-кадр (вывод разобран как JSON целиком)
+  ok    список функций
+  ok    список исключений
+  ok    версия
+  ok    подсказка
+  ok    битый CRC помечен
+  ok    битый CRC: кадр разобран
+  ok    короткий кадр
+  ok    stdin: JSON-протокол
+  ok    JSON: stdin (вывод разобран как JSON целиком)
+  ok    JSON: файловый режим, кадр 1 (вывод разобран как JSON целиком)
+  ok    JSON: файловый режим, кадр 2 (вывод разобран как JSON целиком)
+  ok    файловый режим: обе строки выдали JSON (2)
+  ok    CLI выжил на 1923 строках корпуса (код выхода 1)
+CLI contract: 35 checks, 0 failures — OK
+===== 4/4 sanitizers (ASan + UBSan) =====
+ASan+UBSan available (gcc), 2000 frames under sanitizers
+platform=Linux -> ASAN_OPTIONS=detect_leaks=1
+mbparse unit tests
+-- CRC-16/MODBUS
+-- сборка кадра в тесте
+-- RTU: корректные кадры
+-- RTU: битый CRC
+-- TCP
+-- Граничные длины
+-- PDU-исключение: границы
+-- Заявленная длина > буфера
+-- decode_data: границы
+-- Таблицы
+-- hex-декодер
+-- Форматтеры: содержимое
+-- JSON: контракт вывода
+-- Форматтеры: границы буфера
+unit tests: 1769 checks, 0 failures — OK
+mbparse frame feeder — deterministic, seed=0x1234ABCD, frames=2000
+modes: 0 random / 1 truncated / 2 bit-flips / 3 declared-len>buffer / 4 valid(+crc) / 5 boundary lens
+
+fed=2000  reached parser=1911  rejected=89  crashes=0
+RTU: crc ok=333  crc bad=1365   TCP frames=1231   bare PDU=1911   exception frames=1676
+modes hit: random=339 truncated=364 bitflips=298 declared-len=349 valid=301 boundaries=349
+formatter calls into small buffers=567959, out-of-bounds/inconsistent=0
+JSON-выводов разобрано валидатором=4840, невалидных=0
+-- фиддер: инварианты
+frame feeder: 16 checks, 0 failures — OK
+-- репро найденных багов
+repro: 159 checks, 0 failures
+ALL TESTS PASSED
+# exit=0
+
+### Build examples (gcc)
+╔══════════════════════════════════════════╗
+║  mbparse — Library API Demo             ║
+╚══════════════════════════════════════════╝
+
+1. CRC-16 Modbus
+   CRC-16({01 03 00 00 00 0A}) = 0xCDC5
+
+2. RTU frame — Read Holding Registers
+   RTU  slave=0x01 func=0x03 (Read Holding Registers) addr=0x0000 count=10  CRC=0xCDC5 [OK]
+   CRC status: OK
+
+3. RTU exception frame — Illegal Data Address
+   RTU  slave=0x01 err=0x03 (Read Holding Registers) exc=0x02 (Illegal Data Address)  CRC=0xF1C0 [OK]
+
+4. TCP frame — Write Single Register
+   TCP  tid=0x0001  slave=0x01 func=0x06 (Write Single Register) addr=0x0001 value=0x0003
+
+5. JSON output
+   {"protocol":"RTU","slave_id":1,"crc":52677,"crc_ok":true,"pdu":{"slave_id":1,"function":3,"function_name":"Read Holding Registers","is_exception":false,"data_len":4,"data":[0,0,0,10]}}
+
+6. Hex string decoder
+   "01 03 00 00 00 0A" → 6 bytes: 01 03 00 00 00 0A 
+
+7. Function code lookup
+   0x03 → Read Holding Registers
+   0x10 → Write Multiple Registers
+   0x2B → Encapsulated Interface Transport
+   0x06: Write a single analog output register
+   0x01 exception: Illegal Function
+   0x0B exception: Gateway Target Device Failed to Respond
+
+8. Data section decoder
+   Write Single Coil: addr=0x0001, value=0xFF00 (ON)
+
+All demos complete.
+
+==============================================================================
+
+# make clean && CC=clang make test
+clang -O2 -Wall -Wextra -pedantic -std=c99 -o mbparse mbparse.c 
+clang -O2 -Wall -Wextra -pedantic -std=c99 -I. -o tests/mbtest tests/test_mbparse.c 
+clang -O2 -Wall -Wextra -pedantic -std=c99 -I. -o tests/fuzz_frames tests/fuzz_frames.c 
+clang -O2 -Wall -Wextra -pedantic -std=c99 -I. -o tests/jsoncheck tests/jsoncheck.c 
+===== 1/4 unit tests =====
+./tests/mbtest
+mbparse unit tests
+-- CRC-16/MODBUS
+-- сборка кадра в тесте
+-- RTU: корректные кадры
+-- RTU: битый CRC
+-- TCP
+-- Граничные длины
+-- PDU-исключение: границы
+-- Заявленная длина > буфера
+-- decode_data: границы
+-- Таблицы
+-- hex-декодер
+-- Форматтеры: содержимое
+-- JSON: контракт вывода
+-- Форматтеры: границы буфера
+unit tests: 1769 checks, 0 failures — OK
+===== 2/4 frame feeder (20000 кадров) =====
+./tests/fuzz_frames 20000
+mbparse frame feeder — deterministic, seed=0x1234ABCD, frames=20000
+modes: 0 random / 1 truncated / 2 bit-flips / 3 declared-len>buffer / 4 valid(+crc) / 5 boundary lens
+
+fed=20000  reached parser=19144  rejected=856  crashes=0
+RTU: crc ok=3652  crc bad=13408   TCP frames=12386   bare PDU=19144   exception frames=16744
+modes hit: random=3334 truncated=3296 bitflips=3315 declared-len=3389 valid=3354 boundaries=3312
+formatter calls into small buffers=5699876, out-of-bounds/inconsistent=0
+JSON-выводов разобрано валидатором=48590, невалидных=0
+-- фиддер: инварианты
+frame feeder: 16 checks, 0 failures — OK
+===== 3/4 CLI contract =====
+./tests/fuzz_frames --corpus tests/corpus.txt 2000 > /dev/null
+sh tests/cli_smoke.sh ./mbparse tests/corpus.txt ./tests/jsoncheck
+CLI contract (./mbparse)
+  ok    RTU: slave_id = 1
+  ok    RTU: функция 0x03
+  ok    RTU: имя функции
+  ok    RTU: адрес из данных
+  ok    RTU: количество регистров
+  ok    RTU: CRC распознан
+  ok    RTU: вердикт по CRC
+  ok    JSON: протокол RTU
+  ok    JSON: crc_ok = true
+  ok    JSON: data_len = 4
+  ok    JSON: вложенный PDU под ключом pdu
+  ok    JSON: RTU-ответ (вывод разобран как JSON целиком)
+  ok    explain: смысл кадра
+  ok    exception: код 02
+  ok    exception: err=0x03
+  ok    JSON: кадр-исключение
+  ok    JSON: код исключения
+  ok    JSON: кадр-исключение (вывод разобран как JSON целиком)
+  ok    TCP: протокол
+  ok    TCP: unit_id
+  ok    TCP: вложенный PDU под ключом pdu
+  ok    JSON: TCP-кадр (вывод разобран как JSON целиком)
+  ok    список функций
+  ok    список исключений
+  ok    версия
+  ok    подсказка
+  ok    битый CRC помечен
+  ok    битый CRC: кадр разобран
+  ok    короткий кадр
+  ok    stdin: JSON-протокол
+  ok    JSON: stdin (вывод разобран как JSON целиком)
+  ok    JSON: файловый режим, кадр 1 (вывод разобран как JSON целиком)
+  ok    JSON: файловый режим, кадр 2 (вывод разобран как JSON целиком)
+  ok    файловый режим: обе строки выдали JSON (2)
+  ok    CLI выжил на 1923 строках корпуса (код выхода 1)
+CLI contract: 35 checks, 0 failures — OK
+===== 4/4 sanitizers (ASan + UBSan) =====
+ASan+UBSan available (clang), 2000 frames under sanitizers
+platform=Linux -> ASAN_OPTIONS=detect_leaks=1
+mbparse unit tests
+-- CRC-16/MODBUS
+-- сборка кадра в тесте
+-- RTU: корректные кадры
+-- RTU: битый CRC
+-- TCP
+-- Граничные длины
+-- PDU-исключение: границы
+-- Заявленная длина > буфера
+-- decode_data: границы
+-- Таблицы
+-- hex-декодер
+-- Форматтеры: содержимое
+-- JSON: контракт вывода
+-- Форматтеры: границы буфера
+unit tests: 1769 checks, 0 failures — OK
+mbparse frame feeder — deterministic, seed=0x1234ABCD, frames=2000
+modes: 0 random / 1 truncated / 2 bit-flips / 3 declared-len>buffer / 4 valid(+crc) / 5 boundary lens
+
+fed=2000  reached parser=1911  rejected=89  crashes=0
+RTU: crc ok=333  crc bad=1365   TCP frames=1231   bare PDU=1911   exception frames=1676
+modes hit: random=339 truncated=364 bitflips=298 declared-len=349 valid=301 boundaries=349
+formatter calls into small buffers=567959, out-of-bounds/inconsistent=0
+JSON-выводов разобрано валидатором=4840, невалидных=0
+-- фиддер: инварианты
+frame feeder: 16 checks, 0 failures — OK
+-- репро найденных багов
+repro: 159 checks, 0 failures
+ALL TESTS PASSED
+# exit=0
+
+### Build examples (clang)
+╔══════════════════════════════════════════╗
+║  mbparse — Library API Demo             ║
+╚══════════════════════════════════════════╝
+
+1. CRC-16 Modbus
+   CRC-16({01 03 00 00 00 0A}) = 0xCDC5
+
+2. RTU frame — Read Holding Registers
+   RTU  slave=0x01 func=0x03 (Read Holding Registers) addr=0x0000 count=10  CRC=0xCDC5 [OK]
+   CRC status: OK
+
+3. RTU exception frame — Illegal Data Address
+   RTU  slave=0x01 err=0x03 (Read Holding Registers) exc=0x02 (Illegal Data Address)  CRC=0xF1C0 [OK]
+
+4. TCP frame — Write Single Register
+   TCP  tid=0x0001  slave=0x01 func=0x06 (Write Single Register) addr=0x0001 value=0x0003
+
+5. JSON output
+   {"protocol":"RTU","slave_id":1,"crc":52677,"crc_ok":true,"pdu":{"slave_id":1,"function":3,"function_name":"Read Holding Registers","is_exception":false,"data_len":4,"data":[0,0,0,10]}}
+
+6. Hex string decoder
+   "01 03 00 00 00 0A" → 6 bytes: 01 03 00 00 00 0A 
+
+7. Function code lookup
+   0x03 → Read Holding Registers
+   0x10 → Write Multiple Registers
+   0x2B → Encapsulated Interface Transport
+   0x06: Write a single analog output register
+   0x01 exception: Illegal Function
+   0x0B exception: Gateway Target Device Failed to Respond
+
+8. Data section decoder
+   Write Single Coil: addr=0x0001, value=0xFF00 (ON)
+
+All demos complete.
+
+==============================================================================
+
+### 1) MinGW GCC (x86_64-w64-mingw32-gcc) build
+build ok
+tests built
+feeder built
+jsoncheck built
+/home/lain/.hermes/profiles/forgessa/cache/scratch/win-final/mbparse.exe: PE32+ executable for MS Windows 5.02 (console), x86-64, 19 sections
+
+### 2) wine: MinGW GCC unit tests
+-- Форматтеры: границы буфера
+unit tests: 1769 checks, 0 failures — OK
+
+### 3) clang --target=x86_64-w64-mingw32 build (the windows clang leg)
+build ok
+tests built
+feeder built
+/home/lain/.hermes/profiles/forgessa/cache/scratch/win-final/mbparse-clang.exe: PE32+ executable for MS Windows 5.02 (console), x86-64, 19 sections
+
+### 4) wine: clang(MinGW target) unit tests
+-- Форматтеры: границы буфера
+unit tests: 1769 checks, 0 failures — OK
+
+### 5) wine: clang(MinGW target) frame feeder 2000
+formatter calls into small buffers=567959, out-of-bounds/inconsistent=0
+JSON-выводов разобрано валидатором=4840, невалидных=0
+-- фиддер: инварианты
+frame feeder: 16 checks, 0 failures — OK
+### wine: CLI contract, MinGW GCC build
+  ok    JSON: stdin (вывод разобран как JSON целиком)
+  ok    JSON: файловый режим, кадр 1 (вывод разобран как JSON целиком)
+  ok    JSON: файловый режим, кадр 2 (вывод разобран как JSON целиком)
+  ok    файловый режим: обе строки выдали JSON (2)
+  ok    CLI выжил на 1923 строках корпуса (код выхода 1)
+CLI contract: 35 checks, 0 failures — OK
+
+### wine: CLI contract, clang(MinGW target) build
+  ok    JSON: stdin (вывод разобран как JSON целиком)
+  ok    JSON: файловый режим, кадр 1 (вывод разобран как JSON целиком)
+  ok    JSON: файловый режим, кадр 2 (вывод разобран как JSON целиком)
+  ok    файловый режим: обе строки выдали JSON (2)
+  ok    CLI выжил на 1923 строках корпуса (код выхода 1)
+CLI contract: 35 checks, 0 failures — OK
+
+==============================================================================
+# Гейт личности компилятора и шаг Build, вытащенные из ci.yml и прогнанные
+# локально (негативные случаи обязаны падать):
+
+============================================================
+CASE: identity gcc  -> exit 0
+   matrix: os=ubuntu-latest cc=gcc
+   resolved driver: gcc
+   /usr/bin/gcc
+   version: gcc (GCC) 16.1.1 20260625
+   compiler identity OK: gcc
+============================================================
+CASE: identity clang  -> exit 0
+   matrix: os=ubuntu-latest cc=clang
+   resolved driver: clang
+   /usr/bin/clang
+   version: clang version 22.1.6
+   compiler identity OK: clang
+============================================================
+CASE: identity gcc-is-clang MUST FAIL  -> exit 1
+   matrix: os=macos-latest cc=gcc
+   resolved driver: clang
+   /usr/bin/clang
+   version: clang version 22.1.6
+   ::error::cc=gcc leg is clang behind an alias: 'clang version 22.1.6'
+============================================================
+CASE: identity clang-but-gcc MUST FAIL  -> exit 1
+   matrix: os=ubuntu-latest cc=clang
+   resolved driver: gcc
+   /usr/bin/gcc
+   version: gcc (GCC) 16.1.1 20260625
+   ::error::cc=clang leg runs 'gcc (GCC) 16.1.1 20260625'
+============================================================
+CASE: build windows gcc  -> exit 0
+   building with: x86_64-w64-mingw32-gcc
+   artifact: mbparse.exe (176503 bytes)
+============================================================
+CASE: build windows clang-mingw  -> exit 0
+   building with: clang --target=x86_64-w64-mingw32
+   artifact: mbparse.exe (177517 bytes)
+============================================================
+CASE: build linux gcc  -> exit 0
+   building with: gcc
+   artifact: mbparse (39312 bytes)
+============================================================
+CASE: build linux clang  -> exit 0
+   building with: clang
+   artifact: mbparse (43480 bytes)
+
+==============================================================================
+# CI-fallback без make (ветка else шага Test): make скрыт из PATH,
+# CC=clang, дерево — копия репозитория:
+
+make not available — building and running the same tests directly
+unit tests: 1769 checks, 0 failures — OK
+frame feeder: 16 checks, 0 failures — OK
+repro: 159 checks, 0 failures
+frame feeder: 16 checks, 0 failures — OK
+CLI contract: 35 checks, 0 failures — OK
