@@ -300,7 +300,7 @@ this repository — digest `portfolio-review`, record `mbparse`
 
 > «Объяснить кадр» — редкая и полезная функция: не дамп байтов, а текст
 > «что этот кадр делает». Годится и как CLI, и как библиотека внутри других
-> инструментов — идеальный движок для mbrs.
+> инструментов — идеальный движок для mbSCADA.
 
 The record listed the open part as *"0 тестов, нет fuzzing на битых кадрах"*;
 `make test` with the deterministic feeder above closes exactly that.
