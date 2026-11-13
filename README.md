@@ -1,11 +1,20 @@
+<div align="center">
+
+<img src="docs/banner.svg" alt="mbparse banner" width="1000">
+
 # mbparse — Modbus RTU/TCP frame analyzer
+
+### Zero-dependency C99 CLI tool for parsing, validating, and explaining Modbus frames.
 
 [![CI](https://github.com/kostyk348/mbparse/actions/workflows/ci.yml/badge.svg)](https://github.com/kostyk348/mbparse/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kostyk348/mbparse?sort=semver&color=blue)](https://github.com/kostyk348/mbparse/releases)
 [![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/kostyk348/mbparse/blob/master/LICENSE)
 [![Last commit](https://img.shields.io/github/last-commit/kostyk348/mbparse?branch=master)](https://github.com/kostyk348/mbparse/commits/master)
 
-Zero-dependency C99 CLI tool for parsing, validating, and explaining Modbus frames.
+</div>
+
+---
+
 
 ```
 $ make
